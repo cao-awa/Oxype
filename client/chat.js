@@ -39,7 +39,7 @@
     let joinUuidInput;
     let submitJoinSessionBtn;
 
-    // Conversation Settings Elements (top-right button + dialog)
+    // Conversation Settings Elements (top-right button + dialogs)
     let sessionSettingsBtn;
     let sessionSettingsDialog;
     let closeSessionSettingsBtn;
@@ -48,7 +48,6 @@
     let ssSessionOwnerEl;
     let ssSessionIdEl;
     let ssMemberListEl;
-    let ssManageSectionEl;
     let ssEditFormEl;
     let ssNameInputEl;
     let ssDescInputEl;
@@ -58,6 +57,13 @@
     let ssInviteHintEl;
     let ssCreateInviteBtnEl;
     let ssLeaveBtnEl;
+    // Members / management toasts and their entry buttons
+    let membersDialog;
+    let closeMembersBtnEl;
+    let openMembersBtnEl;
+    let manageDialog;
+    let closeManageBtnEl;
+    let openManageBtnEl;
 
     // Settings Elements
     let settingsBtn;
@@ -68,6 +74,10 @@
 
     // Role/state of the currently open conversation
     let activeSessionInfo = null;
+    let activeSessionUsers = new Map();
+
+    // Calendar day of the last rendered message; drives the per-date separators
+    let lastRenderedDateKey = '';
 
     // Track the final received/read message sequence for active conversation
     let currentSeq = 0;
@@ -111,7 +121,6 @@
         ssSessionOwnerEl = document.getElementById('ssSessionOwner');
         ssSessionIdEl = document.getElementById('ssSessionId');
         ssMemberListEl = document.getElementById('ssMemberList');
-        ssManageSectionEl = document.getElementById('ssManageSection');
         ssEditFormEl = document.getElementById('ssEditForm');
         ssNameInputEl = document.getElementById('ssNameInput');
         ssDescInputEl = document.getElementById('ssDescInput');
@@ -121,6 +130,14 @@
         ssInviteHintEl = document.getElementById('ssInviteHint');
         ssCreateInviteBtnEl = document.getElementById('ssCreateInviteBtn');
         ssLeaveBtnEl = document.getElementById('ssLeaveBtn');
+
+        // Members / management toasts
+        membersDialog = document.getElementById('membersDialog');
+        closeMembersBtnEl = document.getElementById('closeMembersBtn');
+        openMembersBtnEl = document.getElementById('openMembersBtn');
+        manageDialog = document.getElementById('manageDialog');
+        closeManageBtnEl = document.getElementById('closeManageBtn');
+        openManageBtnEl = document.getElementById('openManageBtn');
 
         // Settings references
         settingsBtn = document.getElementById('settingsBtn');
@@ -235,6 +252,23 @@
             ssLeaveBtnEl.addEventListener('click', handleLeaveSession);
         }
 
+        // Members / management toast entry points and close buttons
+        if (openMembersBtnEl) {
+            openMembersBtnEl.addEventListener('click', openMembersDialog);
+        }
+
+        if (closeMembersBtnEl) {
+            closeMembersBtnEl.addEventListener('click', closeAllDialogs);
+        }
+
+        if (openManageBtnEl) {
+            openManageBtnEl.addEventListener('click', openManageDialog);
+        }
+
+        if (closeManageBtnEl) {
+            closeManageBtnEl.addEventListener('click', closeAllDialogs);
+        }
+
         // Settings dialog events
         if (settingsBtn) {
             settingsBtn.addEventListener('click', openSettingsDialog);
@@ -297,7 +331,8 @@
 
     /**
      * Open the conversation settings dialog for the active conversation.
-     * Loads real member/role data before showing anything.
+     * The first screen shows the conversation info, invite UUIDs and leave action;
+     * members and management live in their own toasts.
      */
     async function openSessionSettingsDialog() {
         if (!activeSessionId) return;
@@ -312,12 +347,46 @@
     }
 
     /**
+     * Open the members toast for the active conversation.
+     * The member list is fetched on open so it always reflects the current roster.
+     */
+    async function openMembersDialog() {
+        if (!activeSessionId) return;
+
+        closeAllDialogs();
+        if (dialogOverlay) dialogOverlay.style.display = 'block';
+        if (membersDialog) {
+            membersDialog.style.display = 'block';
+        }
+
+        await loadSessionMembers();
+    }
+
+    /**
+     * Open the management toast (rename/description), for owners and admins only.
+     */
+    function openManageDialog() {
+        if (!activeSessionId) return;
+
+        const info = activeSessionInfo || {};
+        if (!info.isOwner && !info.isAdmin) return;
+
+        closeAllDialogs();
+        if (dialogOverlay) dialogOverlay.style.display = 'block';
+        if (manageDialog) {
+            manageDialog.style.display = 'block';
+        }
+    }
+
+    /**
      * Close all active dialogs
      */
     function closeAllDialogs() {
         if (dialogOverlay) dialogOverlay.style.display = 'none';
         if (sessionOptionsDialog) sessionOptionsDialog.style.display = 'none';
         if (sessionSettingsDialog) sessionSettingsDialog.style.display = 'none';
+        if (membersDialog) membersDialog.style.display = 'none';
+        if (manageDialog) manageDialog.style.display = 'none';
         if (settingsDialog) settingsDialog.style.display = 'none';
     }
 
@@ -495,7 +564,6 @@
         }
 
         renderSessionSettings();
-        await loadSessionMembers();
         await loadSessionInvites();
     }
 
@@ -509,8 +577,8 @@
         if (ssSessionDescEl) ssSessionDescEl.textContent = info.description || getI18nText('chat.noDescription', 'No description');
         if (ssSessionOwnerEl) ssSessionOwnerEl.textContent = info.owner ? `#${info.owner}` : '-';
 
-        // Management controls are for the owner and admins only.
-        if (ssManageSectionEl) ssManageSectionEl.style.display = (isOwner || isAdmin) ? 'block' : 'none';
+        // Management lives in its own toast, reachable through this entry button.
+        if (openManageBtnEl) openManageBtnEl.style.display = (isOwner || isAdmin) ? 'inline-flex' : 'none';
         // Invite UUID management is owner-only.
         if (ssInviteSectionEl) ssInviteSectionEl.style.display = isOwner ? 'block' : 'none';
 
@@ -626,7 +694,9 @@
             empty.textContent = getI18nText('chat.noInvites', 'No invite UUIDs yet.');
             ssInviteListEl.appendChild(empty);
         } else {
-            uuids.forEach(uuid => {
+            uuids.forEach(rawUuid => {
+                const uuid = String(rawUuid || '').replace(/^"|"$/g, '').trim();
+                if (!uuid) return;
                 const row = document.createElement('div');
                 row.className = 'invite-item';
 
@@ -656,13 +726,14 @@
 
     /** Copies an invite UUID to the clipboard. */
     function copyInviteUuid(uuid) {
+        const cleanUuid = String(uuid || '').replace(/^"|"$/g, '').trim();
         const done = () => {
             if (window.OxypeStyle) {
                 window.OxypeStyle.showToast(getI18nText('chat.copied', 'Copied to clipboard'), 'success');
             }
         };
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(uuid).then(done).catch(() => {});
+            navigator.clipboard.writeText(cleanUuid).then(done).catch(() => {});
         }
     }
 
@@ -751,11 +822,12 @@
 
     /** Revokes an invite UUID (owner only). */
     async function handleRevokeInvite(uuid) {
+        const cleanUuid = String(uuid || '').replace(/^"|"$/g, '').trim();
         const auth = window.OxypeCore ? window.OxypeCore.getStoredAuth() : null;
         const userId = currentUser ? currentUser.id : (auth ? auth.userId : null);
 
         try {
-            await window.OxypeCore.revokeSessionInvite(activeSessionId, uuid, userId, auth ? auth.token : null);
+            await window.OxypeCore.revokeSessionInvite(activeSessionId, cleanUuid, userId, auth ? auth.token : null);
             await loadSessionInvites();
         } catch (err) {
             console.error('[Chat] Revoke invite failed:', err);
@@ -942,6 +1014,21 @@
     }
 
     /**
+     * Updates the latest message preview of the active session in the sidebar list.
+     * @param {string} senderName
+     * @param {string} content
+     */
+    function updateActiveSessionLastMessage(senderName, content) {
+        if (!activeSessionId || !sessionListEl) return;
+        const item = sessionListEl.querySelector(`[data-session-id="${activeSessionId}"]`);
+        if (!item) return;
+        const previewEl = item.querySelector('.session-last-message');
+        if (previewEl) {
+            previewEl.textContent = content ? `${senderName || 'User'}: ${content}` : '';
+        }
+    }
+
+    /**
      * Render the session list strictly from real data.
      * No fake or mock session templates are introduced.
      * @param {Array<Object|number>} sessions 
@@ -981,14 +1068,12 @@
 
             const avatarChar = sessionName.trim().charAt(0).toUpperCase() || '#';
 
-            // The sidebar subtitle shows the description when one exists, otherwise the ID.
-            const subtext = sessionDesc || `ID: ${sessionId}`;
-
+            // The sidebar subtitle displays the latest message preview ("sender: message content"), blank when empty.
             sessionBtn.innerHTML = `
                 <div class="session-avatar">${escapeHtml(avatarChar)}</div>
                 <div class="session-details">
                     <div class="session-name">${escapeHtml(sessionName)}</div>
-                    <div class="session-subtext">${escapeHtml(String(subtext))}</div>
+                    <div class="session-subtext session-last-message"></div>
                 </div>
             `;
 
@@ -997,6 +1082,30 @@
             });
 
             sessionListEl.appendChild(sessionBtn);
+        });
+
+        // Fetch the latest message preview for each session
+        const previewUserId = currentUser ? currentUser.id : null;
+        const previewAuth = window.OxypeCore ? window.OxypeCore.getStoredAuth() : null;
+        sessions.forEach(session => {
+            const sessionId = typeof session === 'object' ? (session.sessionId || session.id) : session;
+            if (sessionId === undefined || sessionId === null) return;
+            window.OxypeCore.getLastMessage(sessionId, previewUserId, previewAuth ? previewAuth.token : null)
+                .then(lastMsg => {
+                    const sId = String(sessionId);
+                    const item = sessionListEl.querySelector(`[data-session-id="${sId}"]`);
+                    const previewEl = item ? item.querySelector('.session-last-message') : null;
+                    if (previewEl) {
+                        if (lastMsg && lastMsg.hasMessage && (lastMsg.content || lastMsg.senderName)) {
+                            previewEl.textContent = `${lastMsg.senderName || 'User'}: ${lastMsg.content || ''}`;
+                        } else {
+                            previewEl.textContent = '';
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.warn(`[Chat] Failed to load lastMessage/${sessionId}:`, err.message);
+                });
         });
 
         // Batch fetch real session metadata via POST /getSessions with { sessions: [...] }
@@ -1015,15 +1124,13 @@
                         if (sName) {
                             sessionsMap.set(sId, { sessionId: sId, sessionName: sName, description: sDesc });
 
-                            // Update corresponding sidebar element display name, subtitle and avatar
+                            // Update corresponding sidebar element display name and avatar
                             const sessionBtn = sessionListEl.querySelector(`[data-session-id="${sId}"]`);
                             if (sessionBtn) {
                                 const nameEl = sessionBtn.querySelector('.session-name');
                                 const avatarEl = sessionBtn.querySelector('.session-avatar');
-                                const subtextEl = sessionBtn.querySelector('.session-subtext');
                                 if (nameEl) nameEl.textContent = sName;
                                 if (avatarEl) avatarEl.textContent = sName.trim().charAt(0).toUpperCase() || '#';
-                                if (subtextEl) subtextEl.textContent = sDesc || `ID: ${sId}`;
                             }
 
                             // If this session is currently active in main view, refresh the header
@@ -1091,9 +1198,26 @@
 
         // Clear messages view for newly selected session
         messagesContainerEl.innerHTML = '';
+        // Reset the date tracking so the first message of the reloaded history
+        // always emits its own date separator.
+        lastRenderedDateKey = '';
 
         // Query received message sequence & message history
         const userId = currentUser ? currentUser.id : null;
+        activeSessionUsers.clear();
+        try {
+            const memberInfo = await window.OxypeCore.getSessionUsers(sessionId, userId);
+            if (memberInfo && Array.isArray(memberInfo.users)) {
+                memberInfo.users.forEach(u => {
+                    if (u && u.userid != null) {
+                        activeSessionUsers.set(String(u.userid), u.username || `User #${u.userid}`);
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn(`[Chat] getSessionUsers/${sessionId} skipped:`, e.message);
+        }
+
         try {
             // Retrieve latest read/received message sequence for this session
             const seq = await window.OxypeCore.getReceivedMessageSeq(userId, sessionId);
@@ -1126,12 +1250,22 @@
                             : (window.OxypeCore && window.OxypeCore.getStoredAuth() ? window.OxypeCore.getStoredAuth().userId : null);
                         const senderId = (msg.sender !== undefined && msg.sender !== null) ? msg.sender : msg.userid;
                         const isSelf = Boolean(currentUserId != null && senderId != null && String(senderId) === String(currentUserId));
+                        const senderName = isSelf
+                            ? (currentUser && currentUser.username ? currentUser.username : 'Me')
+                            : (activeSessionUsers.get(String(senderId)) || (senderId != null ? `User #${senderId}` : 'User'));
+
+                        // The server stamps each message in epoch milliseconds; older
+                        // records predate the field and render without a clock time.
+                        const timestampMs = (msg.timestamp !== undefined && msg.timestamp !== null)
+                            ? Number(msg.timestamp)
+                            : 0;
 
                         appendMessage({
                             text: text,
-                            sender: isSelf ? (currentUser && currentUser.username ? currentUser.username : 'Me') : (senderId != null ? `User #${senderId}` : 'User'),
+                            sender: senderName,
                             isSelf: isSelf,
-                            timestamp: msg.time ? new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+                            timestamp: formatClockTime(timestampMs),
+                            timestampMs: timestampMs
                         });
                     }
                 });
@@ -1185,15 +1319,21 @@
         const hint = document.getElementById('emptyConversationHint');
         if (hint) hint.remove();
 
-        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        // Stamp the optimistic bubble locally; the server assigns the authoritative
+        // timestamp when the message is stored.
+        const sentAtMs = Date.now();
+        const timestamp = formatClockTime(sentAtMs);
+        const myName = currentUser && currentUser.username ? currentUser.username : 'Me';
 
         // Optimistically render outgoing message bubble in the stream
         appendMessage({
             text: text,
-            sender: currentUser ? currentUser.username : 'Me',
+            sender: myName,
             isSelf: true,
-            timestamp: timestamp
+            timestamp: timestamp,
+            timestampMs: sentAtMs
         });
+        updateActiveSessionLastMessage(myName, text);
 
         // Send POST to /sendMessage/{sessionId}
         try {
@@ -1214,17 +1354,97 @@
     }
 
     /**
-     * Append a message bubble to the messages stream
-     * @param {{text: string, sender: string, isSelf: boolean, timestamp: string}} msg 
+     * Format a millisecond timestamp as a clock time, precise to hour/minute/second.
+     * @param {number|undefined|null} timestamp
+     * @returns {string} e.g. "09:07:42", or '' when there is no usable timestamp
+     */
+    function formatClockTime(timestamp) {
+        const ms = Number(timestamp);
+        if (!ms || !Number.isFinite(ms) || ms <= 0) return '';
+        return new Date(ms).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        });
+    }
+
+    /**
+     * Format a millisecond timestamp as a year/month/day date label.
+     * @param {number|undefined|null} timestamp
+     * @returns {string} e.g. "2026/10/06", or '' when there is no usable timestamp
+     */
+    function formatDateLabel(timestamp) {
+        const ms = Number(timestamp);
+        if (!ms || !Number.isFinite(ms) || ms <= 0) return '';
+        const d = new Date(ms);
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}/${month}/${day}`;
+    }
+
+    /**
+     * Identity of the calendar day a timestamp falls on, used to detect date changes.
+     * @param {number|undefined|null} timestamp
+     * @returns {string} e.g. "2026-10-06", or '' when there is no usable timestamp
+     */
+    function dateKeyOf(timestamp) {
+        const ms = Number(timestamp);
+        if (!ms || !Number.isFinite(ms) || ms <= 0) return '';
+        const d = new Date(ms);
+        return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    }
+
+    /**
+     * Append a date separator row: the date sits on the far left and a divider line
+     * run alongside it, marking the boundary between messages of different days.
+     * @param {number} timestamp Milliseconds of the first message of the new date
+     */
+    function appendDateSeparator(timestamp) {
+        if (!messagesContainerEl) return;
+
+        const row = document.createElement('div');
+        row.className = 'message-date-separator';
+
+        const label = document.createElement('span');
+        label.className = 'message-date-label';
+        label.textContent = formatDateLabel(timestamp);
+
+        const line = document.createElement('span');
+        line.className = 'message-date-line';
+
+        row.appendChild(label);
+        row.appendChild(line);
+        messagesContainerEl.appendChild(row);
+    }
+
+    /**
+     * Append a message bubble to the messages stream.
+     * A date separator is inserted ahead of the first message of each new date, so
+     * the year/month/day is taken from the first message that crosses into that date.
+     * @param {{text: string, sender: string, isSelf: boolean, timestamp: string, timestampMs?: number}} msg
      */
     function appendMessage(msg) {
         if (!messagesContainerEl) return;
 
+        // Insert the date boundary before the first message belonging to a new day.
+        const key = dateKeyOf(msg.timestampMs);
+        if (key && key !== lastRenderedDateKey) {
+            appendDateSeparator(msg.timestampMs);
+            lastRenderedDateKey = key;
+        }
+
         const row = document.createElement('div');
         row.className = `message-row ${msg.isSelf ? 'outgoing' : 'incoming'}`;
 
+        const senderName = msg.sender || (msg.isSelf ? (currentUser && currentUser.username ? currentUser.username : 'Me') : 'User');
+        const avatarChar = senderName.trim().charAt(0).toUpperCase() || '?';
+
         row.innerHTML = `
+            <div class="message-avatar" aria-hidden="true">${escapeHtml(avatarChar)}</div>
             <div class="message-bubble">
+                <div class="message-sender">${escapeHtml(senderName)}</div>
                 <div class="message-content">${escapeHtml(msg.text)}</div>
                 <div class="message-timestamp">${escapeHtml(msg.timestamp)}</div>
             </div>

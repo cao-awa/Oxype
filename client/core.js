@@ -407,13 +407,14 @@
          * @returns {Promise<Object>} The joined session view
          */
         async joinSessionByUuid(uuid, userId = null, token = null) {
-            if (!uuid || !uuid.trim()) {
+            const cleanUuid = String(uuid || '').replace(/^"|"$/g, '').trim();
+            if (!cleanUuid) {
                 throw new Error('Invite UUID is required');
             }
 
             return await this.request('/joinSessionByUuid', {
                 method: 'POST',
-                body: this.authBody(userId, token, { uuid: uuid.trim() })
+                body: this.authBody(userId, token, { uuid: cleanUuid })
             });
         }
 
@@ -436,6 +437,28 @@
             const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
 
             const endpoint = `/getSessionUsers/${encodeURIComponent(sessionId)}${this.authQuery(currentUserId, authToken)}`;
+            return await this.request(endpoint, { method: 'GET' });
+        }
+
+        /**
+         * Fetch the latest message of a session
+         * GET /lastMessage/{sessionId}?userid=..&token=..
+         *
+         * @param {number|string} sessionId
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @returns {Promise<{hasMessage: boolean, id?: number, sender?: number, senderName?: string, content?: string}|null>}
+         */
+        async getLastMessage(sessionId, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            const endpoint = `/lastMessage/${encodeURIComponent(sessionId)}${this.authQuery(currentUserId, authToken)}`;
             return await this.request(endpoint, { method: 'GET' });
         }
 
@@ -562,7 +585,8 @@
          * POST /revokeSessionInvite/{sessionId}
          */
         async revokeSessionInvite(sessionId, uuid, userId = null, token = null) {
-            if (!sessionId || !uuid) {
+            const cleanUuid = String(uuid || '').replace(/^"|"$/g, '').trim();
+            if (!sessionId || !cleanUuid) {
                 throw new Error('Session ID and UUID are required');
             }
 
@@ -572,7 +596,7 @@
 
             return await this.request(`/revokeSessionInvite/${encodeURIComponent(sessionId)}`, {
                 method: 'POST',
-                body: this.authBody(userId, token, { uuid: uuid })
+                body: this.authBody(userId, token, { uuid: cleanUuid })
             });
         }
 

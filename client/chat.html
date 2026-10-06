@@ -157,7 +157,7 @@
         </div>
     </div>
 
-    <!-- Conversation Settings Toast Dialog (info, members, invites, management) -->
+    <!-- Conversation Settings Toast Dialog (first screen: info, invite UUIDs, leave) -->
     <div id="sessionSettingsDialog" class="interactive-dialog" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="dialogSessionSettingsTitle">
         <header class="dialog-header">
             <h3 id="dialogSessionSettingsTitle" class="dialog-title" data-i18n="chat.sessionSettingsTitle">Conversation Settings</h3>
@@ -192,38 +192,24 @@
                 </div>
             </section>
 
-            <!-- Members list -->
-            <section class="dialog-section">
-                <h4 class="dialog-section-title" data-i18n="chat.membersTitle">Members</h4>
-                <div class="member-list" id="ssMemberList"></div>
+            <!-- Invite UUID management (owner only) -->
+            <section class="dialog-section" id="ssInviteSection" style="display: none;">
+                <div class="info-row">
+                    <span class="info-label" data-i18n="chat.invitesTitle">Invite UUIDs</span>
+                    <button type="button" id="ssCreateInviteBtn" class="btn-secondary btn-sm" data-i18n="chat.createInviteBtn">Generate UUID</button>
+                </div>
+                <div class="invite-hint" id="ssInviteHint"></div>
+                <div class="invite-list" id="ssInviteList"></div>
             </section>
 
-            <!-- Management (owner / admin only) -->
-            <section class="dialog-section" id="ssManageSection" style="display: none;">
-                <h4 class="dialog-section-title" data-i18n="chat.manageSectionTitle">Management</h4>
-                <form id="ssEditForm" class="dialog-form" novalidate>
-                    <div class="form-group">
-                        <label for="ssNameInput" class="form-label" data-i18n="chat.sessionNameField">Name</label>
-                        <input type="text" id="ssNameInput" class="form-input" autocomplete="off">
-                    </div>
-                    <div class="form-group">
-                        <label for="ssDescInput" class="form-label" data-i18n="chat.sessionDescField">Description</label>
-                        <input type="text" id="ssDescInput" class="form-input" autocomplete="off">
-                    </div>
-                    <div class="dialog-actions">
-                        <button type="submit" id="ssSaveBtn" class="btn-primary" data-i18n="chat.saveChangesBtn">Save Changes</button>
-                    </div>
-                </form>
-
-                <!-- Invite UUID management (owner only) -->
-                <div id="ssInviteSection" style="display: none;">
-                    <div class="info-row">
-                        <span class="info-label" data-i18n="chat.invitesTitle">Invite UUIDs</span>
-                        <button type="button" id="ssCreateInviteBtn" class="btn-secondary btn-sm" data-i18n="chat.createInviteBtn">Generate UUID</button>
-                    </div>
-                    <div class="invite-hint" id="ssInviteHint"></div>
-                    <div class="invite-list" id="ssInviteList"></div>
-                </div>
+            <!-- Entry points to the dedicated members / management toasts -->
+            <section class="dialog-section">
+                <button type="button" id="openMembersBtn" class="btn-secondary settings-nav-btn">
+                    <span data-i18n="chat.membersTitle">Members</span>
+                </button>
+                <button type="button" id="openManageBtn" class="btn-secondary settings-nav-btn" style="display: none;">
+                    <span data-i18n="chat.manageSectionTitle">Management</span>
+                </button>
             </section>
 
             <!-- Leave conversation -->
@@ -240,6 +226,54 @@
                     <span data-i18n="chat.leaveSessionBtn">Leave Conversation</span>
                 </button>
             </div>
+        </div>
+    </div>
+
+    <!-- Members Toast Dialog -->
+    <div id="membersDialog" class="interactive-dialog" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="dialogMembersTitle">
+        <header class="dialog-header">
+            <h3 id="dialogMembersTitle" class="dialog-title" data-i18n="chat.membersTitle">Members</h3>
+            <button type="button" class="dialog-close-btn" id="closeMembersBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body">
+            <section class="dialog-section">
+                <div class="member-list" id="ssMemberList"></div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Conversation Management Toast Dialog (owner / admin only) -->
+    <div id="manageDialog" class="interactive-dialog" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="dialogManageTitle">
+        <header class="dialog-header">
+            <h3 id="dialogManageTitle" class="dialog-title" data-i18n="chat.manageSectionTitle">Management</h3>
+            <button type="button" class="dialog-close-btn" id="closeManageBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body">
+            <section class="dialog-section">
+                <form id="ssEditForm" class="dialog-form" novalidate>
+                    <div class="form-group">
+                        <label for="ssNameInput" class="form-label" data-i18n="chat.sessionNameField">Name</label>
+                        <input type="text" id="ssNameInput" class="form-input" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label for="ssDescInput" class="form-label" data-i18n="chat.sessionDescField">Description</label>
+                        <input type="text" id="ssDescInput" class="form-input" autocomplete="off">
+                    </div>
+                    <div class="dialog-actions">
+                        <button type="submit" id="ssSaveBtn" class="btn-primary" data-i18n="chat.saveChangesBtn">Save Changes</button>
+                    </div>
+                </form>
+            </section>
         </div>
     </div>
 

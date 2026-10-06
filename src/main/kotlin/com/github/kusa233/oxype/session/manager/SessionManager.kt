@@ -78,10 +78,18 @@ object SessionManager {
         return BytesUtil.concat(SESSION_PREFIX, SkippedBase256.longToBuf(sessionId))
     }
 
+    fun normalizeInviteUuid(uuid: String): String {
+        var s = uuid.trim()
+        while (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
+            s = s.substring(1, s.length - 1).trim()
+        }
+        return s
+    }
+
     fun createInviteKey(uuid: String): ByteArray {
         return BytesUtil.concat(
             SESSION_INVITE_UUID_PREFIX,
-            uuid.trim().toByteArray(StandardCharsets.UTF_8)
+            normalizeInviteUuid(uuid).toByteArray(StandardCharsets.UTF_8)
         )
     }
 
@@ -93,14 +101,32 @@ object SessionManager {
     }
 
     fun getInviteList(sessionId: Long): SessionInviteList {
-        return STORAGE[createSessionActiveUuidsKey(sessionId), SessionInviteList::class]
-            ?: SessionInviteList(mutableListOf())
+        val inviteList = STORAGE[createSessionActiveUuidsKey(sessionId), SessionInviteList::class]
+            ?: return SessionInviteList(mutableListOf())
+
+        var changed = false
+        val cleanList = mutableListOf<String>()
+        for (raw in inviteList.uuids) {
+            val clean = normalizeInviteUuid(raw)
+            if (clean != raw) {
+                changed = true
+            }
+            if (!cleanList.contains(clean)) {
+                cleanList.add(clean)
+            }
+        }
+        if (changed || cleanList.size != inviteList.uuids.size) {
+            inviteList.uuids.clear()
+            inviteList.uuids.addAll(cleanList)
+            STORAGE[createSessionActiveUuidsKey(sessionId)] = inviteList
+        }
+        return inviteList
     }
 
     fun getInviteUuids(sessionId: Long, ownerId: Long): List<String> {
         val session = getSession(sessionId) ?: throw IllegalArgumentException("Session not found")
         requireOwner(session, ownerId)
-        return getInviteList(sessionId).uuids.toList()
+        return getInviteList(sessionId).uuids.map { normalizeInviteUuid(it) }.distinct()
     }
 
     /** Generates a fresh invite UUID, enforcing the per-session cap. */
@@ -114,10 +140,11 @@ object SessionManager {
         }
 
         val uuid = UUID.randomUUID().toString()
-        inviteList.uuids.add(uuid)
+        val cleanUuid = normalizeInviteUuid(uuid)
+        inviteList.uuids.add(cleanUuid)
         STORAGE[createSessionActiveUuidsKey(sessionId)] = inviteList
-        STORAGE[createInviteKey(uuid)] = sessionId.toString()
-        return uuid
+        STORAGE[createInviteKey(cleanUuid)] = sessionId.toString()
+        return cleanUuid
     }
 
     fun revokeInviteUuid(sessionId: Long, ownerId: Long, uuid: String): Boolean {
@@ -125,22 +152,27 @@ object SessionManager {
         requireOwner(session, ownerId)
 
         val inviteList = getInviteList(sessionId)
-        val removed = inviteList.uuids.remove(uuid.trim())
+        val clean = normalizeInviteUuid(uuid)
+        val removed = inviteList.uuids.removeIf { normalizeInviteUuid(it) == clean }
         if (removed) {
             STORAGE[createSessionActiveUuidsKey(sessionId)] = inviteList
-            STORAGE.remove(createInviteKey(uuid.trim()))
+            STORAGE.remove(createInviteKey(clean))
+            STORAGE.remove(createInviteKey(uuid))
+            STORAGE.remove(createInviteKey("\"$clean\""))
         }
         return removed
     }
 
     /** Resolves an invite UUID and adds the user to the target session. */
     fun joinByInviteUuid(uuid: String, userid: Long): Session {
-        val trimmed = uuid.trim()
+        val trimmed = normalizeInviteUuid(uuid)
         if (trimmed.isEmpty()) {
             throw IllegalArgumentException("Invite UUID is required")
         }
 
         val sessionIdStr = STORAGE.getString(createInviteKey(trimmed))
+            ?: STORAGE.getString(createInviteKey(uuid))
+            ?: STORAGE.getString(createInviteKey("\"$trimmed\""))
             ?: throw IllegalArgumentException("Invalid or expired invite UUID")
         val sessionId = sessionIdStr.toLongOrNull()
             ?: throw IllegalArgumentException("Invalid invite UUID mapping")

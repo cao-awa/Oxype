@@ -175,6 +175,9 @@
     font-size: 0.8rem;
     color: var(--text-muted);
     margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Sidebar Footer (User Profile & Settings) */
@@ -352,7 +355,8 @@
 /* Message Bubble Elements */
 .message-row {
     display: flex;
-    gap: 12px;
+    align-items: flex-end;
+    gap: 10px;
     max-width: 75%;
 }
 
@@ -363,6 +367,29 @@
 .message-row.outgoing {
     align-self: flex-end;
     flex-direction: row-reverse;
+}
+
+.message-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-full);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.message-row.incoming .message-avatar {
+    background-color: var(--primary-light);
+    color: var(--primary-color);
+}
+
+.message-row.outgoing .message-avatar {
+    background-color: var(--primary-color);
+    color: #ffffff;
 }
 
 .message-bubble {
@@ -385,11 +412,55 @@
     border-top-right-radius: 4px;
 }
 
+.message-sender {
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+    line-height: 1.2;
+}
+
+.message-row.incoming .message-sender {
+    color: var(--primary-color);
+}
+
+.message-row.outgoing .message-sender {
+    color: rgba(255, 255, 255, 0.9);
+    text-align: right;
+}
+
 .message-timestamp {
     font-size: 0.72rem;
     margin-top: 4px;
     opacity: 0.75;
+    font-variant-numeric: tabular-nums;
+}
+
+.message-row.outgoing .message-timestamp {
     text-align: right;
+}
+
+/* Date boundary: the date sits on the far left with a divider running beside it */
+.message-date-separator {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    align-self: stretch;
+    margin: 6px 0 2px;
+    width: 100%;
+}
+
+.message-date-label {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.message-date-line {
+    flex: 1;
+    height: 1px;
+    background-color: var(--border-color);
 }
 
 /* Chat Composer Area */
@@ -504,6 +575,12 @@
     gap: 4px;
 }
 
+/* Keep tall toast content scrollable inside the fixed-height dialog */
+.dialog-body {
+    max-height: 62vh;
+    overflow-y: auto;
+}
+
 .settings-row {
     display: flex;
     align-items: center;
@@ -552,6 +629,17 @@
     margin-top: 4px;
 }
 
+/* Buttons that open the dedicated members / management toasts */
+.settings-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 10px 14px;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
 /* Key/value rows inside the settings dialog */
 .info-grid {
     display: flex;
@@ -580,12 +668,12 @@
     word-break: break-word;
 }
 
-/* Member list */
+/* Member list (sole content of the members toast) */
 .member-list {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 220px;
+    max-height: 55vh;
     overflow-y: auto;
 }
 

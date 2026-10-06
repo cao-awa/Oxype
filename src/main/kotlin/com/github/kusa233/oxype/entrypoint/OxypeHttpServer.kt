@@ -15,6 +15,7 @@ import com.github.kusa233.kalmia.server.network.http.context.KalmiaHttpContext
 import com.github.kusa233.kalmia.server.network.http.entrypoint.service.KalmiaHttpService
 import com.github.kusa233.kalmia.server.network.http.placeholder.url.type.placeholder
 import com.github.kusa233.oxype.element.message.piece.MessagePieces
+import com.github.kusa233.oxype.element.message.piece.MessageTextPiece
 import com.github.kusa233.oxype.exception.body.NeedJsonBodyException
 import com.github.kusa233.oxype.exception.login.AuthenticationException
 import com.github.kusa233.oxype.exception.request.MissingParameterException
@@ -616,6 +617,42 @@ object OxypeHttpServer {
                             JSONArray {
                                 MessageManager.getMessages(sessionId, start, end).forEach {
                                     add(it.encode())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Returns the latest message of a session, or empty if none.
+             *
+             * GET /lastMessage/{sessionId}?userid=..&token=..
+             */
+            route("lastMessage/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                get {
+                    requireUserFromQuery { user ->
+                        val session = requireSession(sessionId)
+                        requireSessionMember(session, user.id) {
+                            val lastMsg = MessageManager.getLastMessage(sessionId)
+                            if (lastMsg == null) {
+                                JSONObject {
+                                    "hasMessage" set false
+                                }
+                            } else {
+                                val text = lastMsg.pieces.pieces
+                                    .filterIsInstance<MessageTextPiece>()
+                                    .joinToString("") { it.text }
+                                val senderUser = UserManager.getUser(lastMsg.sender)
+                                val senderName = senderUser?.username ?: "User #${lastMsg.sender}"
+                                JSONObject {
+                                    "hasMessage" set true
+                                    "id" set lastMsg.id
+                                    "sender" set lastMsg.sender
+                                    "senderName" set senderName
+                                    "timestamp" set lastMsg.timestamp
+                                    "content" set text
                                 }
                             }
                         }

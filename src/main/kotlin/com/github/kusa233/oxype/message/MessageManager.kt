@@ -29,7 +29,7 @@ object MessageManager {
 
     fun sendMessage(sessionId: Long, sender: Long, pieces: MessagePieces): Long {
         val messageId = STORAGE.incrementMessageSeq(sessionId)
-        val message = Message(messageId, sender, pieces)
+        val message = Message(messageId, sender, System.currentTimeMillis(), pieces)
         STORAGE[createMessageKey(sessionId, messageId)] = message.encode().toString()
         return messageId
     }
@@ -65,5 +65,13 @@ object MessageManager {
             }
         }
         return messages
+    }
+
+    fun getLastMessage(sessionId: Long): Message? {
+        val maxSeq = maxReceivedMessageSeq(sessionId)
+        if (maxSeq <= 0L) {
+            return null
+        }
+        return getMessage(sessionId, maxSeq)
     }
 }
