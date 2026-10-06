@@ -1,0 +1,185 @@
+/**
+ * Oxype Web Client - Registration and Authentication Page Stylesheet
+ * Controls layout, form cards, animations, and responsive auth components.
+ */
+
+.auth-wrapper {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
+                var(--bg-base);
+}
+
+.auth-top-bar {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.auth-container {
+    width: 100%;
+    max-width: 440px;
+    background-color: var(--bg-surface);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xl);
+    border: 1px solid var(--border-color);
+    padding: 36px 32px;
+    position: relative;
+    overflow: hidden;
+    transition: transform var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+.auth-header {
+    text-align: center;
+    margin-bottom: 28px;
+}
+
+.auth-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 54px;
+    height: 54px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, var(--primary-color), #60a5fa);
+    color: #ffffff;
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow-md);
+}
+
+.auth-title {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.auth-subtitle {
+    font-size: 0.92rem;
+    color: var(--text-secondary);
+}
+
+/* Tabs for Register / Login switch */
+.auth-tabs {
+    display: flex;
+    border-bottom: 2px solid var(--border-color);
+    margin-bottom: 24px;
+}
+
+.auth-tab-btn {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 10px 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.auth-tab-btn.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+
+.auth-tab-btn:hover:not(.active) {
+    color: var(--text-primary);
+}
+
+/* Form Styles */
+.auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.form-label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.form-input {
+    width: 100%;
+    padding: 11px 14px;
+}
+
+.form-error-banner {
+    display: none;
+    padding: 10px 14px;
+    background-color: var(--danger-light);
+    color: var(--danger-hover);
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    line-height: 1.4;
+    border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.form-error-banner.visible {
+    display: block;
+}
+
+.form-info-banner {
+    display: none;
+    padding: 10px 14px;
+    background-color: var(--success-light);
+    color: var(--success-color);
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    line-height: 1.4;
+    border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.form-info-banner.visible {
+    display: block;
+}
+
+.auth-submit-btn {
+    margin-top: 8px;
+    width: 100%;
+    padding: 12px;
+    font-size: 1rem;
+}
+
+.auth-footer {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.auth-switch-link {
+    color: var(--primary-color);
+    cursor: pointer;
+    font-weight: 500;
+    text-decoration: underline;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+    display: inline;
+}
+
+.auth-switch-link:hover {
+    color: var(--primary-hover);
+}

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="app.title">Oxype Instant Messaging</title>
+    <!-- Base Stylesheet and Style Controller Styles -->
+    <link rel="stylesheet" href="style.css">
+    <!-- Registration / Auth Specific Stylesheet -->
+    <link rel="stylesheet" href="register.css">
+</head>
+<body>
+    <div class="auth-wrapper">
+        <!-- Top Action Bar for Language and Theme Selection -->
+        <header class="auth-top-bar toolbar-actions">
+            <!-- Language Selector Dropdown -->
+            <select id="languageSelect" class="select-control" aria-label="Language">
+                <!-- Dynamically populated by lang.js -->
+            </select>
+
+            <!-- Theme Color Tone Selector -->
+            <select id="colorThemeSelect" class="select-control" aria-label="Color Tone">
+                <!-- Dynamically populated by style.js -->
+            </select>
+
+            <!-- Theme Toggle Button -->
+            <button class="theme-toggle-btn" type="button" aria-label="Toggle Theme">
+                <span class="theme-icon"><svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></span>
+                <span class="theme-label" data-i18n="common.dark">Dark</span>
+            </button>
+        </header>
+
+        <!-- Main Authentication Card -->
+        <main class="auth-container">
+            <header class="auth-header">
+                <div class="auth-logo" aria-hidden="true">O</div>
+                <h1 class="auth-title" data-i18n="auth.title">Welcome to Oxype</h1>
+                <p class="auth-subtitle" data-i18n="auth.subtitle">Create an account to start chatting</p>
+            </header>
+
+            <!-- Tab Switchers (Register as default opening screen) -->
+            <nav class="auth-tabs" aria-label="Authentication Modes">
+                <button type="button" id="tabRegister" class="auth-tab-btn active" data-i18n="auth.tabRegister">Register</button>
+                <button type="button" id="tabLogin" class="auth-tab-btn" data-i18n="auth.tabLogin">Login</button>
+            </nav>
+
+            <!-- Status Feedback Banners -->
+            <div id="authErrorBanner" class="form-error-banner" role="alert" aria-live="polite"></div>
+            <div id="authInfoBanner" class="form-info-banner" role="status" aria-live="polite"></div>
+
+            <!-- Registration Form (Opening Screen Default) -->
+            <form id="registerForm" class="auth-form" novalidate>
+                <div class="form-group">
+                    <label for="regUsername" class="form-label" data-i18n="auth.usernameLabel">Username</label>
+                    <input type="text" id="regUsername" class="form-input" 
+                           data-i18n-placeholder="auth.usernamePlaceholder" 
+                           placeholder="Enter username (1-15 characters)" 
+                           maxlength="15" required autocomplete="username">
+                </div>
+
+                <div class="form-group">
+                    <label for="regPassword" class="form-label" data-i18n="auth.passwordLabel">Password</label>
+                    <input type="password" id="regPassword" class="form-input" 
+                           data-i18n-placeholder="auth.passwordPlaceholder" 
+                           placeholder="Enter password (6-20 characters)" 
+                           minlength="6" maxlength="20" required autocomplete="new-password">
+                </div>
+
+                <div class="form-group">
+                    <label for="regConfirmPassword" class="form-label" data-i18n="auth.confirmPasswordLabel">Confirm Password</label>
+                    <input type="password" id="regConfirmPassword" class="form-input" 
+                           data-i18n-placeholder="auth.confirmPasswordPlaceholder" 
+                           placeholder="Re-enter password" 
+                           minlength="6" maxlength="20" required autocomplete="new-password">
+                </div>
+
+                <button type="submit" class="btn-primary auth-submit-btn" data-i18n="auth.registerBtn">Create Account</button>
+            </form>
+
+            <!-- Login Form (Alternative Tab) -->
+            <form id="loginForm" class="auth-form" style="display: none;" novalidate>
+                <div class="form-group">
+                    <label for="loginUserId" class="form-label" data-i18n="auth.userIdLabel">User ID</label>
+                    <input type="number" id="loginUserId" class="form-input" 
+                           data-i18n-placeholder="auth.userIdPlaceholder" 
+                           placeholder="Enter numeric user ID" required autocomplete="username">
+                </div>
+
+                <div class="form-group">
+                    <label for="loginPassword" class="form-label" data-i18n="auth.passwordLabel">Password</label>
+                    <input type="password" id="loginPassword" class="form-input" 
+                           data-i18n-placeholder="auth.passwordPlaceholder" 
+                           placeholder="Enter password (6-20 characters)" 
+                           minlength="6" maxlength="20" required autocomplete="current-password">
+                </div>
+
+                <button type="submit" class="btn-primary auth-submit-btn" data-i18n="auth.loginBtn">Sign In</button>
+            </form>
+
+            <!-- Footer Switch Link -->
+            <footer class="auth-footer">
+                <button type="button" id="authSwitchLink" class="auth-switch-link" data-i18n="auth.hasAccount">Already have an account? Sign In</button>
+            </footer>
+        </main>
+    </div>
+
+    <!-- Scripts: Localization, Style Controller, Core API, Page Controller -->
+    <script src="lang.js"></script>
+    <script src="style.js"></script>
+    <script src="core.js"></script>
+    <script src="register.js"></script>
+</body>
+</html>
