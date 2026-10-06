@@ -15,8 +15,13 @@ import java.util.Random
 
 object UserManager {
     private val RANDOM: Random = Random()
-    private val BASE64_ENCODER: Base64.Encoder = Base64.getEncoder()
-    private val BASE64_DECODER: Base64.Decoder = Base64.getDecoder()
+    /**
+     * URL-safe alphabet on purpose: tokens travel in the query string for GET
+     * routes, and the standard Base64 alphabet contains '+', which query-string
+     * decoding rewrites to a space and silently breaks authentication.
+     */
+    private val BASE64_ENCODER: Base64.Encoder = Base64.getUrlEncoder().withoutPadding()
+    private val BASE64_DECODER: Base64.Decoder = Base64.getUrlDecoder()
     private val loggedUsers: MutableMap<String, Long> = mutableMapOf()
 
     fun getJoinedSessions(userid: Long): SessionList {
@@ -28,6 +33,18 @@ object UserManager {
         val sessionList = STORAGE[key, SessionList::class] ?: SessionList(false, mutableListOf())
         sessionList.add(sessionId)
         STORAGE[key] = sessionList
+    }
+
+    fun leaveSession(userid: Long, sessionId: Long) {
+        val key = createJoinedSessionsKey(userid)
+        val sessionList = STORAGE[key, SessionList::class] ?: return
+        sessionList.remove(sessionId)
+        STORAGE[key] = sessionList
+    }
+
+    /** Resolves a logged-in user id from a token, if that token is still active. */
+    fun getUserIdByToken(token: String): Long? {
+        return this.loggedUsers[token]
     }
 
     fun register(username: String, password: String): User {

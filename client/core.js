@@ -38,13 +38,92 @@
         }
 
         /**
+         * Coerces a user id into the numeric form the JSON API expects.
+         *
+         * Ids are read back from localStorage, which only ever stores strings, while
+         * the backend parses them from JSON. Sending "12" instead of 12 is what made
+         * the session-management routes answer 400 Bad Request.
+         *
+         * @param {number|string|null} value
+         * @returns {number|string|null} A number when the value is numeric, else the original
+         */
+        toNumericId(value) {
+            if (value === null || value === undefined || value === '') {
+                return value;
+            }
+            const numeric = Number(value);
+            return Number.isNaN(numeric) ? value : numeric;
+        }
+
+        /**
+         * Builds the authenticated JSON body shared by the session routes.
+         *
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @param {Object} [extra] Additional fields to merge into the body
+         * @returns {{token: string, userid: number|string|null}}
+         */
+        authBody(userId = null, token = null, extra = {}) {
+            const storedAuth = this.getStoredAuth();
+            const rawId = (userId !== null && userId !== undefined && userId !== '')
+                ? userId
+                : (storedAuth && storedAuth.userId);
+            const rawToken = token || (storedAuth && storedAuth.token);
+
+            return {
+                token: rawToken || '',
+                userid: this.toNumericId(rawId),
+                ...extra
+            };
+        }
+
+        /**
+         * Builds the `userid`/`token` query suffix used to authenticate GET requests.
+         *
+         * The backend authenticates every route through `getUserByToken`, and GET
+         * requests carry no JSON body, so the credentials travel in the query string.
+         *
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @returns {string} Query string beginning with '?' or an empty string
+         */
+        authQuery(userId = null, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+            const currentToken = token || (storedAuth && storedAuth.token);
+
+            const params = new URLSearchParams();
+            if (currentUserId !== null && currentUserId !== undefined) {
+                params.set('userid', String(currentUserId));
+            }
+            if (currentToken) {
+                params.set('token', String(currentToken));
+            }
+
+            const query = params.toString();
+            return query ? `?${query}` : '';
+        }
+
+        /**
          * Helper to perform fetch requests with JSON headers and response parsing
          * @param {string} endpoint 
          * @param {Object} options 
          * @returns {Promise<any>}
          */
         async request(endpoint, options = {}) {
-            const url = `${this.baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+            const method = (options.method || 'GET').toUpperCase();
+            let url = `${this.baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+
+            // GET requests must still prove identity, so append the credentials the
+            // backend's getUserByToken check expects when the caller has not already.
+            if (method === 'GET' && !url.includes('token=')) {
+                const separator = url.includes('?') ? '&' : '?';
+                const auth = this.authQuery().replace(/^\?/, '');
+                if (auth) {
+                    url += separator + auth;
+                }
+            }
+
             const isCrossOrigin = Boolean(this.baseUrl && typeof window !== 'undefined' && window.location && !url.startsWith(window.location.origin));
 
             const headers = {
@@ -87,10 +166,14 @@
 
                 // If HTTP status is not ok (2xx), throw structured error
                 if (!response.ok) {
-                    const errorMsg = (data && (data.message || data.error)) || `HTTP ${response.status}: ${response.statusText}`;
+                    const errorMsg = this.extractErrorMessage(data, response);
                     const error = new Error(errorMsg);
                     error.status = response.status;
                     error.data = data;
+                    error.endpoint = endpoint;
+                    error.method = method;
+                    error.url = url;
+                    this.logRequestFailure(method, url, response.status, errorMsg, data);
                     throw error;
                 }
 
@@ -107,16 +190,81 @@
                     const timeoutError = new Error(`Request timed out after ${timeoutMs}ms`);
                     timeoutError.isTimeout = true;
                     timeoutError.isOffline = true;
+                    console.error(`[OxypeCore] ${method} ${url} failed -> timed out after ${timeoutMs}ms`);
                     throw timeoutError;
                 }
                 // Enhance network error description
                 if (err.name === 'TypeError' && err.message.includes('fetch')) {
                     const networkError = new Error('Network error: Unable to connect to Oxype server.');
                     networkError.isOffline = true;
+                    console.error(`[OxypeCore] ${method} ${url} failed -> network error (server unreachable)`, err);
                     throw networkError;
                 }
                 throw err;
             }
+        }
+
+        /**
+         * Extracts the human-readable reason from a failed response.
+         *
+         * Kalmia reports failures as
+         * `{ error_message, error_details_message, error, internal_error_name, ... }`
+         * where `error` only carries the generic protocol text
+         * ("Server protocol error (Kalmia/1.0.34, HTTP/1.1): Bad Request").
+         * Reading `error` before `error_message` is what made every failure -- an
+         * expired invite code, a missing field, a permission problem -- surface in
+         * the UI as an unhelpful bare "Bad Request".
+         *
+         * @param {any} data Parsed response body
+         * @param {Response} response Fetch response
+         * @returns {string} The most specific message available
+         */
+        extractErrorMessage(data, response) {
+            if (data && typeof data === 'object') {
+                const candidates = [
+                    data.error_message,
+                    data.error_details_message,
+                    data.message,
+                    data.error
+                ];
+                // Prefer a concrete reason over the generic protocol text.
+                for (const candidate of candidates) {
+                    if (typeof candidate === 'string' && candidate.trim() && !/^Server protocol error/i.test(candidate.trim())) {
+                        return candidate.trim();
+                    }
+                }
+                // Nothing specific: fall back to whatever text exists.
+                for (const candidate of candidates) {
+                    if (typeof candidate === 'string' && candidate.trim()) {
+                        return candidate.trim();
+                    }
+                }
+            }
+
+            if (typeof data === 'string' && data.trim()) {
+                return data.trim();
+            }
+
+            return `HTTP ${response.status}: ${response.statusText}`;
+        }
+
+        /**
+         * Prints the full detail of a failed request.
+         *
+         * Emitted for every non-2xx response so the browser console always shows the
+         * server's own reason, the method/path and the raw envelope.
+         *
+         * @param {string} method
+         * @param {string} url
+         * @param {number} status
+         * @param {string} message
+         * @param {any} data Raw parsed body
+         */
+        logRequestFailure(method, url, status, message, data) {
+            console.error(
+                `[OxypeCore] ${method} ${url} failed -> HTTP ${status}: ${message}`,
+                { status: status, reason: message, response: data }
+            );
         }
 
         /**
@@ -217,38 +365,214 @@
 
         /**
          * Create a new session
-         * POST /createSession with JSON body { name, token, userid }
+         * POST /createSession with JSON body { name, description, token, userid }
          * 
          * @param {string} name - Name of the session to create
+         * @param {string} [description] - Optional session description
          * @param {string} [token] - Optional explicit auth token; defaults to stored token
          * @param {number|string} [userId] - Optional explicit user ID; defaults to stored userId
-         * @returns {Promise<{session_id: number|string}>}
+         * @returns {Promise<{session_id: number|string, inviteUuid: string}>}
          */
-        async createSession(name, token = null, userId = null) {
+        async createSession(name, description = '', token = null, userId = null) {
             if (!name || !name.trim()) {
                 throw new Error('Session name is required');
             }
 
             const storedAuth = this.getStoredAuth();
             const authToken = token || (storedAuth && storedAuth.token);
-            const currentUserId = userId || (storedAuth && storedAuth.userId);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
 
-            const body = {
-                name: name.trim()
-            };
-            if (authToken) {
-                body.token = authToken;
-            }
-            if (currentUserId !== null && currentUserId !== undefined) {
-                const numericId = Number(currentUserId);
-                const idVal = !isNaN(numericId) ? numericId : currentUserId;
-                body.userId = idVal;
-                body.userid = idVal;
+            const body = this.authBody(currentUserId, authToken, {
+                name: name.trim(),
+                description: (description || '').trim()
+            });
+            // `userId` is kept as an alias for older backend builds.
+            if (body.userid !== null && body.userid !== undefined) {
+                body.userId = body.userid;
             }
 
             return await this.request('/createSession', {
                 method: 'POST',
                 body: body
+            });
+        }
+
+        /**
+         * Join a session using an invite UUID
+         * POST /joinSessionByUuid with JSON body { uuid, token, userid }
+         *
+         * @param {string} uuid
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @returns {Promise<Object>} The joined session view
+         */
+        async joinSessionByUuid(uuid, userId = null, token = null) {
+            if (!uuid || !uuid.trim()) {
+                throw new Error('Invite UUID is required');
+            }
+
+            return await this.request('/joinSessionByUuid', {
+                method: 'POST',
+                body: this.authBody(userId, token, { uuid: uuid.trim() })
+            });
+        }
+
+        /**
+         * List the members of a session
+         * GET /getSessionUsers/{sessionId}?userid=..&token=..
+         *
+         * @param {number|string} sessionId
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @returns {Promise<{users: Array<{userid: number, username: string}>, isOwner: boolean, isAdmin: boolean}>}
+         */
+        async getSessionUsers(sessionId, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            const endpoint = `/getSessionUsers/${encodeURIComponent(sessionId)}${this.authQuery(currentUserId, authToken)}`;
+            return await this.request(endpoint, { method: 'GET' });
+        }
+
+        /**
+         * Read a session's metadata together with the caller's role
+         * POST /getSessionInfo/{sessionId}
+         */
+        async getSessionInfo(sessionId, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/getSessionInfo/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token)
+            });
+        }
+
+        /**
+         * Update a session's name and/or description (owner or admin)
+         * POST /updateSession/{sessionId}
+         */
+        async updateSession(sessionId, changes = {}, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required');
+            }
+
+            const body = this.authBody(userId, token);
+            if (typeof changes.name === 'string') {
+                body.name = changes.name;
+            }
+            if (typeof changes.description === 'string') {
+                body.description = changes.description;
+            }
+
+            return await this.request(`/updateSession/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: body
+            });
+        }
+
+        /**
+         * Remove a member from a session (owner or admin)
+         * POST /removeSessionMember/{sessionId}
+         */
+        async removeSessionMember(sessionId, targetUserId, userId = null, token = null) {
+            if (!sessionId || !targetUserId) {
+                throw new Error('Session ID and target user ID are required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/removeSessionMember/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token, { targetUserid: this.toNumericId(targetUserId) })
+            });
+        }
+
+        /**
+         * Leave a session
+         * POST /leaveSession/{sessionId}
+         */
+        async leaveSession(sessionId, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/leaveSession/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token)
+            });
+        }
+
+        /**
+         * List a session's live invite UUIDs (owner only)
+         * POST /getSessionInvites/{sessionId}
+         */
+        async getSessionInvites(sessionId, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/getSessionInvites/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token)
+            });
+        }
+
+        /**
+         * Generate a new invite UUID (owner only, capped per session)
+         * POST /createSessionInvite/{sessionId}
+         */
+        async createSessionInvite(sessionId, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/createSessionInvite/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token)
+            });
+        }
+
+        /**
+         * Revoke an invite UUID (owner only)
+         * POST /revokeSessionInvite/{sessionId}
+         */
+        async revokeSessionInvite(sessionId, uuid, userId = null, token = null) {
+            if (!sessionId || !uuid) {
+                throw new Error('Session ID and UUID are required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/revokeSessionInvite/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token, { uuid: uuid })
             });
         }
 
@@ -316,17 +640,9 @@
                 throw new Error('Invalid message content');
             }
 
-            const storedAuth = this.getStoredAuth();
-            const currentUserId = userId || (storedAuth && storedAuth.userId);
-            const currentToken = token || (storedAuth && storedAuth.token);
-            const numericUserId = Number(currentUserId);
-            const validUserId = !isNaN(numericUserId) ? numericUserId : currentUserId;
-
-            const payload = {
-                userid: validUserId,
-                token: currentToken || '',
+            const payload = this.authBody(userId, token, {
                 pieces: pieces
-            };
+            });
 
             return await this.request(`/sendMessage/${encodeURIComponent(sessionId)}`, {
                 method: 'POST',
@@ -348,19 +664,11 @@
                 throw new Error('Session ID is required');
             }
 
-            const storedAuth = this.getStoredAuth();
-            const currentUserId = userId || (storedAuth && storedAuth.userId);
-            const currentToken = token || (storedAuth && storedAuth.token);
-            const numericUserId = Number(currentUserId);
-            const validUserId = !isNaN(numericUserId) ? numericUserId : currentUserId;
-
-            const payload = {
-                userid: validUserId,
-                token: currentToken || ''
-            };
+            const payload = this.authBody(userId, token);
+            const pathUserId = encodeURIComponent(payload.userid);
 
             try {
-                const response = await this.request(`/receivedMessageSeq/${encodeURIComponent(validUserId)}/${encodeURIComponent(sessionId)}`, {
+                const response = await this.request(`/receivedMessageSeq/${pathUserId}/${encodeURIComponent(sessionId)}`, {
                     method: 'POST',
                     body: payload
                 });
@@ -396,18 +704,10 @@
                 throw new Error('Session ID is required');
             }
 
-            const storedAuth = this.getStoredAuth();
-            const currentUserId = userId || (storedAuth && storedAuth.userId);
-            const currentToken = token || (storedAuth && storedAuth.token);
-            const numericUserId = Number(currentUserId);
-            const validUserId = !isNaN(numericUserId) ? numericUserId : currentUserId;
-
-            const payload = {
-                userid: validUserId,
-                token: currentToken || '',
+            const payload = this.authBody(userId, token, {
                 start: Number(start),
                 end: Number(end)
-            };
+            });
 
             try {
                 const response = await this.request(`/getMessages/${encodeURIComponent(sessionId)}`, {

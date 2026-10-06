@@ -12,6 +12,10 @@ interface OxypeStorage {
         val USER_JOINED_SESSIONS_PREFIX: ByteArray = byteArrayOf(0, 3)
         val SESSION_MESSAGE_SEQ_PREFIX: ByteArray = byteArrayOf(0, 4)
         val SESSION_RECEIVED_MESSAGE_SEQ_PREFIX: ByteArray = byteArrayOf(0, 5)
+        /** Maps an invite UUID to the session id it grants access to. */
+        val SESSION_INVITE_UUID_PREFIX: ByteArray = byteArrayOf(0, 6)
+        /** Maps a session id to its list of live invite UUIDs. */
+        val SESSION_ACTIVE_UUIDS_PREFIX: ByteArray = byteArrayOf(0, 7)
     }
 
     operator fun set(key: ByteArray, value: Any)

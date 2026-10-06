@@ -21,6 +21,7 @@ import com.github.kusa233.oxype.exception.request.MissingParameterException
 import com.github.kusa233.oxype.message.MessageManager
 import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.manager.SessionManager
+import com.github.kusa233.oxype.user.User
 import com.github.kusa233.oxype.user.manager.UserManager
 import io.netty.handler.codec.http.HttpResponseStatus
 import org.apache.logging.log4j.LogManager
@@ -35,7 +36,7 @@ object OxypeHttpServer {
     fun KalmiaHttpContext.enableCors() {
         responseHeaders().set("Access-Control-Allow-Origin", "*")
         responseHeaders().set("Access-Control-Allow-Headers", "*")
-        responseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+        responseHeaders().set("Access-Control-Allow-Methods", "GET, POST")
     }
 
     /**
@@ -54,11 +55,18 @@ object OxypeHttpServer {
             return action(body.json)
         }
         if (body is KalmiaHttpTextBody) {
-            try {
-                val json = JSONParser.parseObject(body.text)
-                return action(json)
+            // Only the parse is guarded. Wrapping `action` as well would swallow the
+            // route's own aborts -- validation, auth and permission failures -- and
+            // mislabel every one of them as "Need json body". Browsers send
+            // cross-origin POSTs as text/plain, so that turned every failure into a
+            // bare 400 "Bad Request" that hid the real reason.
+            val parsed = try {
+                JSONParser.parseObject(body.text)
             } catch (e: Exception) {
-                // fall through
+                null
+            }
+            if (parsed != null) {
+                return action(parsed)
             }
         }
         abortWith(
@@ -84,13 +92,31 @@ object OxypeHttpServer {
         return str
     }
 
+    /**
+     * Reads an integer field from a JSON body, accepting the first name that resolves.
+     *
+     * Numeric ids normally arrive as JSON numbers, but a client that serialises an id
+     * straight out of browser storage sends it quoted, and `getLong` refuses those.
+     * Accepting the string spelling too means a quoted id can no longer surface as a
+     * confusing "missing parameter" 400.
+     */
+    private fun JSONObject.longValue(vararg names: String): Long? {
+        for (name in names) {
+            getLong(name)?.let { return it }
+        }
+        for (name in names) {
+            getString(name)?.trim()?.toLongOrNull()?.let { return it }
+        }
+        return null
+    }
+
     fun <T> KalmiaHttpContext.requireJoinedSession(
         json: JSONObject,
         sessionId: Long,
         defaultValue: T,
         action: () -> T
     ): T {
-        val userid = assertLong(json.getLong("userid"), "userid")
+        val userid = assertLong(json.longValue("userid", "userId"), "userid")
         val token = assertString(json.getString("token"), "token")
 
         val user = UserManager.getUserByToken(token, userid)
@@ -121,6 +147,182 @@ object OxypeHttpServer {
             throw IllegalStateException("Unreachable: the request was aborted")
         }
         return value
+    }
+
+    /**
+     * Authenticates a JSON request through the existing [UserManager.getUserByToken]
+     * lookup and runs [action] with the resolved user.
+     *
+     * Every mutating route funnels through here, so a request without a valid
+     * `userid`/`token` pair can never reach session logic. `userId` is accepted as
+     * an alias because the client has historically sent both spellings.
+     */
+    fun <T> KalmiaHttpContext.requireUser(json: JSONObject, action: (User) -> T): T {
+        val userid = assertLong(json.longValue("userid", "userId"), "userid")
+        val token = assertString(json.getString("token"), "token")
+
+        val user = UserManager.getUserByToken(token, userid)
+        if (user == null) {
+            abortWith(
+                AuthenticationException("Unauthorized"),
+                HttpResponseStatus.UNAUTHORIZED,
+                this
+            )
+            // abortWith always throws; this keeps `user` non-null for the type checker.
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
+
+        return action(user)
+    }
+
+    /**
+     * Resolves the caller of a GET request.
+     *
+     * GET requests carry no JSON envelope, so credentials are read from the query
+     * string and fall back to headers. The same [UserManager.getUserByToken] check
+     * then applies, so both verb families authenticate identically.
+     */
+    fun KalmiaHttpContext.requireUserFromQuery(action: (User) -> Any): Any {
+        enableCors()
+
+        val args = arguments()
+        val useridRaw = args.get("userid")
+            ?: args.get("userId")
+            ?: getHeader("userid")
+            ?: getHeader("X-User-Id")
+        val token = args.get("token")
+            ?: getHeader("token")
+            ?: getHeader("X-Token")
+
+        if (useridRaw == null || token == null) {
+            abortWith(
+                MissingParameterException("Missing parameter 'userid' or 'token'"),
+                HttpResponseStatus.BAD_REQUEST,
+                this
+            )
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
+
+        val userid = useridRaw.toLongOrNull()
+        if (userid == null) {
+            abortWith(
+                MissingParameterException("Parameter 'userid' must be a number"),
+                HttpResponseStatus.BAD_REQUEST,
+                this
+            )
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
+
+        val user = resolveQueryUser(userid, token)
+        if (user == null) {
+            abortWith(
+                AuthenticationException("Unauthorized"),
+                HttpResponseStatus.UNAUTHORIZED,
+                this
+            )
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
+
+        return action(user)
+    }
+
+    /**
+     * Looks up a GET caller, tolerating the query-string damage done to tokens
+     * minted before the URL-safe alphabet was introduced.
+     *
+     * Query decoding rewrites a literal '+' into a space, so a legacy standard-Base64
+     * token arrives with spaces where '+' used to be. Retrying with those characters
+     * restored keeps already-issued tokens working.
+     */
+    private fun resolveQueryUser(userid: Long, token: String): User? {
+        UserManager.getUserByToken(token, userid)?.let { return it }
+
+        if (token.contains(' ')) {
+            UserManager.getUserByToken(token.replace(' ', '+'), userid)?.let { return it }
+        }
+
+        return null
+    }
+
+    /**
+     * Loads a session or aborts with 404.
+     *
+     * Returning the value keeps callers free of the nullable-then-abort dance that
+     * Kotlin cannot smart-cast through, since [abortWith] is declared as `Unit`.
+     */
+    fun KalmiaHttpContext.requireSession(sessionId: Long): Session {
+        val session = SessionManager.getSession(sessionId)
+        if (session == null) {
+            abortWith(
+                IllegalArgumentException("Session not found"),
+                HttpResponseStatus.NOT_FOUND,
+                this
+            )
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
+        return session
+    }
+
+    /** Runs [action] only when [userid] is a member of [session]. */
+    fun <T> KalmiaHttpContext.requireSessionMember(session: Session, userid: Long, action: () -> T): T {
+        if (!session.hasMember(userid)) {
+            abortWith(
+                AuthenticationException("You are not a member of this session"),
+                HttpResponseStatus.FORBIDDEN,
+                this
+            )
+        }
+        return action()
+    }
+
+    /** Runs [action] only for the session owner or one of its admins. */
+    fun <T> KalmiaHttpContext.requireSessionAdmin(session: Session, userid: Long, action: () -> T): T {
+        if (!session.isAdmin(userid)) {
+            abortWith(
+                AuthenticationException("Only the session owner or an admin can do this"),
+                HttpResponseStatus.FORBIDDEN,
+                this
+            )
+        }
+        return action()
+    }
+
+    /** Runs [action] only for the session owner. */
+    fun <T> KalmiaHttpContext.requireSessionOwner(session: Session, userid: Long, action: () -> T): T {
+        if (!session.isOwner(userid)) {
+            abortWith(
+                AuthenticationException("Only the session owner can do this"),
+                HttpResponseStatus.FORBIDDEN,
+                this
+            )
+        }
+        return action()
+    }
+
+    /**
+     * Caller-visible view of a session, including the caller's own role flags so
+     * the client can decide which management controls to render.
+     */
+    private fun sessionView(session: Session, viewerId: Long): JSONObject {
+        return JSONObject {
+            "sessionId" set session.sessionId
+            "sessionName" set session.sessionName
+            "description" set session.description
+            "owner" set session.owner
+            "admins" set JSONArray { session.adminIds().forEach { add(it) } }
+            "members" set JSONArray { session.memberIds().forEach { add(it) } }
+            "isOwner" set session.isOwner(viewerId)
+            "isAdmin" set session.isAdmin(viewerId)
+        }
+    }
+
+    /** Encodes a member entry as `{ userid, username }`. */
+    private fun userView(userid: Long): JSONObject {
+        val user = UserManager.getUser(userid)
+        return JSONObject {
+            "userid" set userid
+            "username" set (user?.username ?: "User #$userid")
+        }
     }
 
     @JvmStatic
@@ -182,27 +384,30 @@ object OxypeHttpServer {
             route("getUser/{userid}") {
                 val userid by placeholder<Long>("userid")
                 get {
-                    enableCors()
-                    val user = UserManager.getUser(userid)
-                    if (user == null) {
-                        abortWith(
-                            IllegalArgumentException("User not found"),
-                            HttpResponseStatus.NOT_FOUND,
-                            this
-                        )
-                    } else {
-                        JSONEncoder.encodeData(user).also {
-                            it.put("hashedPassword", "HIDDEN")
+                    requireUserFromQuery { caller ->
+                        // Only ever expose the caller's own profile to keep this
+                        // read consistent with the authenticated-session policy.
+                        val user = UserManager.getUser(userid)
+                        if (user == null || caller.id != userid) {
+                            abortWith(
+                                IllegalArgumentException("User not found"),
+                                HttpResponseStatus.NOT_FOUND,
+                                this
+                            )
+                        } else {
+                            JSONEncoder.encodeData(user).also {
+                                it.put("hashedPassword", "HIDDEN")
+                            }
                         }
                     }
                 }
             }
 
             route("getJoinedSessions/{userid}") {
-                val userid by placeholder<Long>("userid")
                 get {
-                    enableCors()
-                    UserManager.getJoinedSessions(userid)
+                    requireUserFromQuery { caller ->
+                        UserManager.getJoinedSessions(caller.id)
+                    }
                 }
             }
 
@@ -259,26 +464,31 @@ object OxypeHttpServer {
 
             route("createSession") {
                 post {
-                    try {
-                        requireJsonBody { json ->
-                            val name = assertString(json.getString("name"), "name")
-                            val token = assertString(json.getString("token"), "token")
-                            val userid = assertLong(json.getLong("userId"), "userid")
+                    requireJsonBody { json ->
+                        val name = assertString(json.getString("name"), "name")
+                        // Description is optional; a missing or blank value stores as empty.
+                        val description = json.getString("description") { "" } ?: ""
 
-                            val user = UserManager.getUserByToken(token, userid)
+                        requireUser(json) { user ->
+                            val session = SessionManager.createSession(name, user.id, description)
+                            UserManager.joinSession(user.id, session.sessionId)
 
-                            val session = SessionManager.createSession(name)
-
-                            if (user != null) {
-                                UserManager.joinSession(user.id, session.sessionId)
+                            // Give the creator one invite UUID so the session is shareable
+                            // immediately. The remaining nine are generated on demand.
+                            val inviteUuid = try {
+                                SessionManager.createInviteUuid(session.sessionId, user.id)
+                            } catch (e: Exception) {
+                                null
                             }
 
                             JSONObject {
                                 "session_id" set session.sessionId
+                                "sessionName" set session.sessionName
+                                "description" set session.description
+                                "owner" set session.owner
+                                "inviteUuid" set (inviteUuid ?: "")
                             }
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
                     }
                 }
             }
@@ -311,16 +521,12 @@ object OxypeHttpServer {
             route("getSession/{sessionId}") {
                 val sessionId by placeholder<Long>("sessionId")
                 get {
-                    enableCors()
-                    val session = SessionManager.getSession(sessionId)
-                    if (session == null) {
-                        abortWith(
-                            IllegalArgumentException("Session not found"),
-                            HttpResponseStatus.NOT_FOUND,
-                            this
-                        )
-                    } else {
-                        JSONEncoder.encodeData(session)
+                    requireUserFromQuery { caller ->
+                        val session = requireSession(sessionId)
+
+                        requireSessionMember(session, caller.id) {
+                            sessionView(session, caller.id)
+                        }
                     }
                 }
             }
@@ -331,7 +537,7 @@ object OxypeHttpServer {
                     requireJsonBody { json ->
                         requireJoinedSession(json, sessionId, SENDING_MESSAGE_FAILED_SEQ) {
                             val pieces = json.getArray("pieces")!!
-                            val sender = assertLong(json.getLong("userid"), "userid")
+                            val sender = assertLong(json.longValue("userid", "userId"), "userid")
 
                             val seq = MessageManager.sendMessage(
                                 sessionId,
@@ -369,8 +575,8 @@ object OxypeHttpServer {
                 post {
                     requireJsonBody { json ->
                         requireJoinedSession(json, sessionId, JSONArray()) {
-                            val userid = assertLong(json.getLong("userid"), "userid")
-                            val seq = assertLong(json.getLong("seq"), "seq")
+                            val userid = assertLong(json.longValue("userid", "userId"), "userid")
+                            val seq = assertLong(json.longValue("seq"), "seq")
 
                             val receivedMessageSeq = MessageManager.getReceivedMessageSeq(userid, sessionId)
                             val maxSeq = MessageManager.maxReceivedMessageSeq(sessionId)
@@ -394,9 +600,9 @@ object OxypeHttpServer {
                 post {
                     requireJsonBody { json ->
                         requireJoinedSession(json, sessionId, JSONArray()) {
-                            val userid = assertLong(json.getLong("userid"), "userid")
-                            val start = assertLong(json.getLong("start"), "start")
-                            val end = assertLong(json.getLong("end"), "end")
+                            val userid = assertLong(json.longValue("userid", "userId"), "userid")
+                            val start = assertLong(json.longValue("start"), "start")
+                            val end = assertLong(json.longValue("end"), "end")
 
                             val receivedMessageSeq = MessageManager.getReceivedMessageSeq(userid, sessionId)
                             val maxSeq = MessageManager.maxReceivedMessageSeq(sessionId)
@@ -410,6 +616,238 @@ object OxypeHttpServer {
                             JSONArray {
                                 MessageManager.getMessages(sessionId, start, end).forEach {
                                     add(it.encode())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Lists the members of a session.
+             *
+             * GET /getSessionUsers/{sessionId}?userid=..&token=..
+             *
+             * The token is validated with the existing [UserManager.getUserByToken]
+             * lookup and the caller must already be a member of the session.
+             */
+            route("getSessionUsers/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                get {
+                    requireUserFromQuery { user ->
+                        val session = requireSession(sessionId)
+
+                        requireSessionMember(session, user.id) {
+                            JSONObject {
+                                "sessionId" set session.sessionId
+                                "sessionName" set session.sessionName
+                                "description" set session.description
+                                "owner" set session.owner
+                                "isOwner" set session.isOwner(user.id)
+                                "isAdmin" set session.isAdmin(user.id)
+                                "users" set JSONArray {
+                                    session.memberIds().forEach { add(userView(it)) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Joins a session using an invite UUID. */
+            route("joinSessionByUuid") {
+                post {
+                    requireJsonBody { json ->
+                        val uuid = assertString(json.getString("uuid"), "uuid")
+
+                        requireUser(json) { user ->
+                            try {
+                                val session = SessionManager.joinByInviteUuid(uuid, user.id)
+                                sessionView(session, user.id)
+                            } catch (e: IllegalArgumentException) {
+                                // An unknown or lapsed invite code is a client mistake,
+                                // not a server fault, so it must not surface as a 500.
+                                abortWith(e, HttpResponseStatus.BAD_REQUEST, this)
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Reads a session's own metadata for the settings dialog. */
+            route("getSessionInfo/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionMember(session, user.id) {
+                                sessionView(session, user.id)
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Renames a session and/or updates its description (owner or admin). */
+            route("updateSession/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionAdmin(session, user.id) {
+                                json.getString("name")?.takeIf { it.isNotBlank() }?.let {
+                                    session.sessionName = it
+                                }
+                                json.getString("description")?.let {
+                                    session.description = it
+                                }
+                                SessionManager.saveSession(session)
+                                sessionView(session, user.id)
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Removes a member from a session (owner or admin). */
+            route("removeSessionMember/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        val targetId = assertLong(
+                            json.longValue("targetUserid", "targetUserId"),
+                            "targetUserid"
+                        )
+
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionAdmin(session, user.id) {
+                                if (session.isOwner(targetId)) {
+                                    abortWith(
+                                        IllegalStateException("The session owner cannot be removed"),
+                                        HttpResponseStatus.FORBIDDEN,
+                                        this
+                                    )
+                                }
+                                // An admin may not remove a peer admin unless they own the session.
+                                if (!session.isOwner(user.id) && session.isAdmin(targetId)) {
+                                    abortWith(
+                                        IllegalStateException("Only the owner can remove an admin"),
+                                        HttpResponseStatus.FORBIDDEN,
+                                        this
+                                    )
+                                }
+
+                                session.removeMember(targetId)
+                                SessionManager.saveSession(session)
+                                UserManager.leaveSession(targetId, sessionId)
+                                sessionView(session, user.id)
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Leaves a session. Ownership transfers to the next member when possible. */
+            route("leaveSession/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionMember(session, user.id) {
+                                session.removeMember(user.id)
+                                UserManager.leaveSession(user.id, sessionId)
+
+                                if (session.isOwner(user.id)) {
+                                    val next = session.memberIds().firstOrNull()
+                                    if (next != null) {
+                                        session.owner = next
+                                        session.addMember(next)
+                                    }
+                                }
+
+                                SessionManager.saveSession(session)
+
+                                JSONObject {
+                                    "left" set true
+                                    "sessionId" set sessionId
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Lists the live invite UUIDs of a session (owner only). */
+            route("getSessionInvites/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionOwner(session, user.id) {
+                                val uuids = SessionManager.getInviteUuids(sessionId, user.id)
+                                JSONObject {
+                                    "uuids" set JSONArray { uuids.forEach { add(it) } }
+                                    "max" set SessionManager.MAX_INVITE_UUIDS
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Generates a new invite UUID (owner only, capped per session). */
+            route("createSessionInvite/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionOwner(session, user.id) {
+                                try {
+                                    val uuid = SessionManager.createInviteUuid(sessionId, user.id)
+                                    JSONObject {
+                                        "uuid" set uuid
+                                    }
+                                } catch (e: IllegalStateException) {
+                                    abortWith(
+                                        e,
+                                        HttpResponseStatus.BAD_REQUEST,
+                                        this
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Revokes an invite UUID (owner only). */
+            route("revokeSessionInvite/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        val uuid = assertString(json.getString("uuid"), "uuid")
+
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionOwner(session, user.id) {
+                                val removed = SessionManager.revokeInviteUuid(sessionId, user.id, uuid)
+                                JSONObject {
+                                    "revoked" set removed
+                                    "uuid" set uuid
                                 }
                             }
                         }
