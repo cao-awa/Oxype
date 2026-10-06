@@ -61,12 +61,6 @@
     font-size: 1.6rem;
     font-weight: 700;
     color: var(--text-primary);
-    margin-bottom: 8px;
-}
-
-.auth-subtitle {
-    font-size: 0.92rem;
-    color: var(--text-secondary);
 }
 
 /* Tabs for Register / Login switch */

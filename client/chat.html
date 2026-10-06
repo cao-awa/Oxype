@@ -3,11 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="chat.title">Oxype Chat</title>
-    <!-- Base Stylesheet and Style Controller Styles -->
-    <link rel="stylesheet" href="style.css">
-    <!-- Chat Interface Specific Stylesheet -->
-    <link rel="stylesheet" href="chat.css">
+    <title data-i18n="chat.title">Oxype</title>
+    <!--
+        This page intentionally declares no stylesheet or script directly.
+        Every asset, including the overridable chat.css / chat.js / chat.html, is
+        loaded by bootstrap.js so a user-configured source can be substituted and
+        rolled back to the bundled files if it fails.
+    -->
+    <script src="bootstrap.js"></script>
 </head>
 <body>
     <div class="chat-app-layout">
@@ -319,6 +322,15 @@
                 </select>
             </div>
 
+            <!-- Style Sources Row: opens the dedicated Style Source toast -->
+            <div class="settings-row">
+                <div class="settings-row-label">
+                    <span data-i18n="chat.styleSourcesTitle">Style Source</span>
+                </div>
+                <button type="button" id="openStyleSourcesBtn" class="btn-secondary btn-settings-open"
+                        data-i18n="chat.styleSourcesOpenBtn">Configure</button>
+            </div>
+
             <!-- Logout Row -->
             <div class="settings-row settings-logout-row">
                 <div class="settings-row-label">
@@ -336,10 +348,48 @@
         </div>
     </div>
 
-    <!-- Scripts: Localization, Style Controller, Core API, Page Controller -->
-    <script src="lang.js"></script>
-    <script src="style.js"></script>
-    <script src="core.js"></script>
-    <script src="chat.js"></script>
+    <!-- Style Source Toast Dialog (its own toast, separate from Settings) -->
+    <div id="styleSourcesDialog" class="interactive-dialog" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="dialogStyleSourcesTitle">
+        <header class="dialog-header">
+            <h3 id="dialogStyleSourcesTitle" class="dialog-title" data-i18n="chat.styleSourcesTitle">Style Source</h3>
+            <button type="button" class="dialog-close-btn" id="closeStyleSourcesBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body">
+            <p class="style-sources-hint" id="styleSourcesHint"></p>
+
+            <div class="form-group">
+                <label for="styleSourceHtml" class="form-label">chat.html</label>
+                <input type="text" id="styleSourceHtml" class="form-input" maxlength="128"
+                       placeholder="/custom/chat.html" autocomplete="off" spellcheck="false">
+            </div>
+
+            <div class="form-group">
+                <label for="styleSourceCss" class="form-label">chat.css</label>
+                <input type="text" id="styleSourceCss" class="form-input" maxlength="128"
+                       placeholder="/custom/chat.css" autocomplete="off" spellcheck="false">
+            </div>
+
+            <div class="form-group">
+                <label for="styleSourceJs" class="form-label">chat.js</label>
+                <input type="text" id="styleSourceJs" class="form-input" maxlength="128"
+                       placeholder="/custom/chat.js" autocomplete="off" spellcheck="false">
+            </div>
+
+            <div class="dialog-actions">
+                <button type="button" id="styleSourcesResetBtn" class="btn-secondary" data-i18n="chat.styleSourcesResetBtn">Reset to Default</button>
+                <button type="button" id="styleSourcesSaveBtn" class="btn-primary" data-i18n="chat.styleSourcesSaveBtn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!--
+        Scripts are intentionally absent: bootstrap.js (in <head>) loads lang.js,
+        style.js, core.js and then the overridable chat.js in order.
+    -->
 </body>
 </html>

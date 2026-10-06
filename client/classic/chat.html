@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="chat.title">Oxype</title>
+    <!--
+        Classic skin for the Oxype chat client, kept entirely self-contained in this
+        directory. It is not referenced by the default interface anywhere: to use it,
+        point the "Style Source" fields at /classic/chat.html, /classic/chat.css and
+        /classic/chat.js.
+
+        Like the default page, this document declares no stylesheet or script of its
+        own. bootstrap.js (in <head>) loads the shared language, style and core
+        modules and then whichever chat.css / chat.js the user configured, so this
+        markup only has to provide the element ids and classes those modules expect.
+    -->
+    <script src="../bootstrap.js"></script>
+</head>
+<body>
+    <div class="classic-frameset">
+        <!-- Left rail: brand, conversation list, account -->
+        <aside class="classic-rail">
+            <div class="classic-brand">
+                <span class="classic-brand-mark">O</span>
+                <span class="classic-brand-text" data-i18n="chat.title">Oxype</span>
+            </div>
+
+            <div class="classic-rail-actions">
+                <button type="button" id="sessionOptionsBtn" class="classic-btn classic-btn-block"
+                        data-i18n-title="chat.sessionOptionsTitle" title="Conversation Options"
+                        aria-label="Conversation Options">
+                    <span data-i18n="chat.sessionOptionsBtn">Conversation Options</span>
+                </button>
+            </div>
+
+            <div class="classic-rail-heading" data-i18n="chat.sessionsTitle">Conversations</div>
+
+            <div class="session-list classic-session-list" id="sessionList" role="list">
+                <div class="empty-sessions-placeholder" id="emptySessionsPlaceholder">
+                    <div class="empty-sessions-text" data-i18n="chat.noSessions">No conversations joined yet</div>
+                    <div class="empty-sessions-hint" data-i18n="chat.noSessionsHint">When you join or are added to sessions, they will appear here.</div>
+                </div>
+            </div>
+
+            <footer class="classic-rail-footer">
+                <div class="user-profile-info">
+                    <div class="user-avatar-sm" id="userAvatar">U</div>
+                    <div class="user-meta-text">
+                        <div class="user-display-name" id="userDisplayName">User</div>
+                        <div class="user-id-badge" id="userIdBadge">ID: --</div>
+                    </div>
+                </div>
+                <button id="settingsBtn" class="classic-icon-btn" type="button"
+                        data-i18n-title="chat.settingsBtn" title="Settings" aria-label="Settings">
+                    <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                </button>
+            </footer>
+        </aside>
+
+        <!-- Right pane: conversation header, transcript, composer -->
+        <main class="classic-main">
+            <header class="classic-main-header">
+                <div class="classic-main-title-wrap">
+                    <h2 class="classic-main-title" id="activeSessionName">--</h2>
+                    <div class="classic-main-sub" id="activeSessionDescription"></div>
+                </div>
+                <button type="button" id="sessionSettingsBtn" class="classic-icon-btn" style="display: none;"
+                        data-i18n-title="chat.sessionInfoTitle" title="Conversation Info" aria-label="Conversation Info">
+                    <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="16" x2="12" y2="12"></line>
+                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                    </svg>
+                </button>
+            </header>
+
+            <div class="messages-container classic-transcript" id="messagesContainer"></div>
+
+            <form class="classic-composer" id="chatComposer">
+                <input type="text" id="messageInput" class="classic-input"
+                       data-i18n-placeholder="chat.inputPlaceholder"
+                       placeholder="Type a message..." autocomplete="off">
+                <button type="submit" id="sendMessageBtn" class="classic-btn classic-btn-primary"
+                        data-i18n="chat.sendBtn">Send</button>
+            </form>
+        </main>
+    </div>
+
+    <!-- Session options: create a conversation, or join one by invite UUID -->
+    <div class="interactive-dialog classic-dialog" id="sessionOptionsDialog" style="display: none;" role="dialog" aria-modal="true">
+        <header class="dialog-header">
+            <h3 class="dialog-title" data-i18n="chat.sessionOptionsTitle">Conversation Options</h3>
+            <button type="button" class="dialog-close-btn" id="closeSessionOptionsBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body">
+            <form id="createSessionForm" class="dialog-form" novalidate>
+                <div class="form-group">
+                    <label for="newSessionNameInput" class="form-label" data-i18n="chat.sessionNameField">Name</label>
+                    <input type="text" id="newSessionNameInput" class="form-input" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="newSessionDescInput" class="form-label" data-i18n="chat.sessionDescField">Description</label>
+                    <input type="text" id="newSessionDescInput" class="form-input" autocomplete="off">
+                </div>
+                <div class="dialog-actions">
+                    <button type="submit" id="submitCreateSessionBtn" class="btn-primary" data-i18n="chat.createBtn">Create</button>
+                </div>
+            </form>
+
+            <form id="joinSessionForm" class="dialog-form" novalidate>
+                <div class="form-group">
+                    <label for="joinUuidInput" class="form-label" data-i18n="chat.joinUuidLabel">Invite UUID</label>
+                    <input type="text" id="joinUuidInput" class="form-input" autocomplete="off" spellcheck="false"
+                           data-i18n-placeholder="chat.joinUuidPlaceholder" placeholder="Paste the invite UUID...">
+                </div>
+                <div class="dialog-actions">
+                    <button type="submit" id="joinSessionBtn" class="btn-secondary" data-i18n="chat.joinBtn">Join</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Conversation info: id, invite UUIDs, leave -->
+    <div class="interactive-dialog classic-dialog" id="sessionSettingsDialog" style="display: none;" role="dialog" aria-modal="true">
+        <header class="dialog-header">
+            <h3 class="dialog-title" data-i18n="chat.sessionInfoTitle">Conversation Info</h3>
+            <button type="button" class="dialog-close-btn" id="closeSessionSettingsBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body">
+            <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.sessionIdField">Conversation ID</span>
+                <span class="classic-info-value" id="ssSessionId">--</span>
+            </div>
+            <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.invitesTitle">Invite UUIDs</span>
+                <span class="classic-info-value" id="ssInviteHint"></span>
+            </div>
+            <div class="classic-chiplist" id="ssInviteList"></div>
+            <div class="dialog-actions">
+                <button type="button" id="ssCreateInviteBtn" class="btn-secondary" data-i18n="chat.createInviteBtn">New Invite</button>
+                <button type="button" id="openMembersBtn" class="btn-secondary" data-i18n="chat.membersTitle">Members</button>
+                <button type="button" id="ssLeaveBtn" class="btn-danger" data-i18n="chat.leaveSessionBtn">Leave Conversation</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Member roster, in its own toast -->
+    <div class="interactive-dialog classic-dialog" id="membersDialog" style="display: none;" role="dialog" aria-modal="true">
+        <header class="dialog-header">
+            <h3 class="dialog-title" data-i18n="chat.membersTitle">Members</h3>
+            <button type="button" class="dialog-close-btn" id="closeMembersBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body">
+            <div class="classic-memberlist" id="ssMemberList"></div>
+        </div>
+    </div>
+
+    <!-- Settings: language, theme, colour tone, style source entry, logout -->
+    <div class="interactive-dialog classic-dialog" id="settingsDialog" style="display: none;" role="dialog" aria-modal="true">
+        <header class="dialog-header">
+            <h3 class="dialog-title" data-i18n="chat.settingsTitle">Settings</h3>
+            <button type="button" class="dialog-close-btn" id="closeSettingsBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body">
+            <div class="settings-row">
+                <div class="settings-row-label"><span data-i18n="common.language">Language</span></div>
+                <select id="languageSelect" class="select-control" aria-label="Language"></select>
+            </div>
+            <div class="settings-row">
+                <div class="settings-row-label"><span data-i18n="chat.themeMode">Theme Mode</span></div>
+                <select id="themeModeSelect" class="select-control" aria-label="Theme Mode"></select>
+            </div>
+            <div class="settings-row">
+                <div class="settings-row-label"><span data-i18n="chat.themeColor">Color Tone</span></div>
+                <select id="colorThemeSelect" class="select-control" aria-label="Color Tone"></select>
+            </div>
+            <div class="settings-row">
+                <div class="settings-row-label"><span data-i18n="chat.styleSourcesTitle">Style Source</span></div>
+                <button type="button" id="openStyleSourcesBtn" class="btn-secondary btn-settings-open"
+                        data-i18n="chat.styleSourcesOpenBtn">Configure</button>
+            </div>
+            <div class="settings-row settings-logout-row">
+                <div class="settings-row-label"><span data-i18n="chat.logoutBtn">Log Out</span></div>
+                <button type="button" id="dialogLogoutBtn" class="btn-danger btn-logout-action"
+                        data-i18n="chat.logoutBtn">Log Out</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Style source toast, deliberately separate from the settings toast -->
+    <div class="interactive-dialog classic-dialog" id="styleSourcesDialog" style="display: none;" role="dialog" aria-modal="true">
+        <header class="dialog-header">
+            <h3 class="dialog-title" data-i18n="chat.styleSourcesTitle">Style Source</h3>
+            <button type="button" class="dialog-close-btn" id="closeStyleSourcesBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body">
+            <p class="style-sources-hint" id="styleSourcesHint"></p>
+            <div class="form-group">
+                <label for="styleSourceHtml" class="form-label">chat.html</label>
+                <input type="text" id="styleSourceHtml" class="form-input" maxlength="128"
+                       placeholder="/classic/chat.html" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="form-group">
+                <label for="styleSourceCss" class="form-label">chat.css</label>
+                <input type="text" id="styleSourceCss" class="form-input" maxlength="128"
+                       placeholder="/classic/chat.css" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="form-group">
+                <label for="styleSourceJs" class="form-label">chat.js</label>
+                <input type="text" id="styleSourceJs" class="form-input" maxlength="128"
+                       placeholder="/classic/chat.js" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="dialog-actions">
+                <button type="button" id="styleSourcesResetBtn" class="btn-secondary" data-i18n="chat.styleSourcesResetBtn">Reset to Default</button>
+                <button type="button" id="styleSourcesSaveBtn" class="btn-primary" data-i18n="chat.styleSourcesSaveBtn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="dialogOverlay" class="dialog-overlay" style="display: none;"></div>
+    <div id="toast-container"></div>
+
+    <!--
+        No scripts or stylesheets are declared here on purpose: bootstrap.js loads the
+        shared modules and then the configured chat.css / chat.js.
+    -->
+</body>
+</html>

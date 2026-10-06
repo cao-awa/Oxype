@@ -9,6 +9,9 @@ import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_JOINED_SESSI
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_TOKEN_PREFIX
 import com.github.kusa233.oxype.user.User
+import com.github.kusa233.oxype.user.cssSource
+import com.github.kusa233.oxype.user.htmlSource
+import com.github.kusa233.oxype.user.jsSource
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.Random
@@ -55,13 +58,54 @@ object UserManager {
         val key = createUserKey(userid)
         val hashedPassword = PasswordHasher.hash(password)
 
-        return User(userid, username, hashedPassword).also { user ->
+        return User(userid, username, hashedPassword, "", "", "").also { user ->
             STORAGE[key] = user
         }
     }
 
+    /**
+     * Loads an account.
+     *
+     * Records written before the source fields existed decode with `null` in those
+     * positions, so a normalised copy is returned; everything above this point can
+     * rely on [User.htmlSource] and friends being non-null, and on JSON encoding
+     * producing an empty string rather than an explicit null.
+     */
     fun getUser(userid: Long): User? {
-        return STORAGE[createUserKey(userid), User::class]
+        val stored = STORAGE[createUserKey(userid), User::class] ?: return null
+        if (stored.chatHtmlSource != null && stored.chatCssSource != null && stored.chatJsSource != null) {
+            return stored
+        }
+        return stored.copy(
+            chatHtmlSource = stored.htmlSource,
+            chatCssSource = stored.cssSource,
+            chatJsSource = stored.jsSource
+        )
+    }
+
+    /**
+     * Replaces the caller's custom front-end sources and returns the updated record.
+     *
+     * Each value must satisfy [StyleSources.isValid]; the caller is expected to have
+     * rejected anything else with a 400 so the failure is attributable to the request
+     * rather than silently dropped here. Values are stored trimmed so that a stray
+     * space cannot make an otherwise valid URL fail the check on the next read.
+     */
+    fun updateStyleSources(
+        userid: Long,
+        chatHtmlSource: String,
+        chatCssSource: String,
+        chatJsSource: String
+    ): User? {
+        val existing = getUser(userid) ?: return null
+
+        val updated = existing.copy(
+            chatHtmlSource = chatHtmlSource.trim(),
+            chatCssSource = chatCssSource.trim(),
+            chatJsSource = chatJsSource.trim()
+        )
+        STORAGE[createUserKey(userid)] = updated
+        return updated
     }
 
     fun getUserByToken(token: String, userid: Long): User? {

@@ -12,8 +12,7 @@
     const translations = {
         'en': {
             // General
-            'app.title': 'Oxype Instant Messaging',
-            'app.tagline': 'Connect seamlessly in real-time',
+            'app.title': 'Oxype',
             'common.loading': 'Loading...',
             'common.error': 'An error occurred',
             'common.networkError': 'Unable to connect to server (Server offline)',
@@ -27,7 +26,6 @@
 
             // Auth / Register Page
             'auth.title': 'Welcome to Oxype',
-            'auth.subtitle': 'Create an account to start chatting',
             'auth.tabRegister': 'Register',
             'auth.tabLogin': 'Login',
             'auth.usernameLabel': 'Username',
@@ -46,16 +44,16 @@
             'auth.errPasswordLength': 'Password must be between 6 and 20 characters.',
             'auth.errPasswordMismatch': 'Passwords do not match.',
             'auth.errUserIdRequired': 'Please enter a valid numeric User ID.',
-            'auth.registerSuccess': 'Registration successful! Redirecting to chat...',
-            'auth.loginSuccess': 'Login successful! Redirecting to chat...',
+            'auth.registerSuccess': 'Registration successful! Redirecting...',
+            'auth.loginSuccess': 'Login successful! Redirecting...',
             'auth.registeredInfo': 'Account created! Your User ID is: {userId}',
 
             // Chat Page
-            'chat.title': 'Oxype Chat',
+            'chat.title': 'Oxype',
             'chat.sessionsTitle': 'Conversations',
             'chat.noSessions': 'No conversations joined yet',
             'chat.noSessionsHint': 'When you join or are added to sessions, they will appear here.',
-            'chat.selectSessionHint': 'Select a conversation from the sidebar to start chatting',
+            'chat.selectSessionHint': 'Select a conversation from the sidebar',
             'chat.inputPlaceholder': 'Type a message...',
             'chat.sendBtn': 'Send',
             'chat.logoutBtn': 'Log Out',
@@ -133,13 +131,28 @@
             'chat.loadFailed': 'Failed to load: {reason}',
             'chat.joinErrInvalidUuid': 'This invite UUID is invalid or has expired.',
             'chat.errUnauthorized': 'Your session has expired. Please sign in again.',
-            'chat.errForbidden': 'You do not have permission to do that.'
+            'chat.errForbidden': 'You do not have permission to do that.',
+            'chat.styleSourcesTitle': 'Style Source',
+            'chat.styleSourcesOpenBtn': 'Configure',
+            'chat.styleSourcesHint': 'Point the interface at your own chat.html, chat.css or chat.js. Leave a field empty to use the built-in file. An address is either an https:// link or a path on this site, and may be at most {max} characters.',
+            'chat.styleSourcesDefaults': 'Built-in: {html} · {css} · {js}',
+            'chat.styleSourcesSaveBtn': 'Save',
+            'chat.styleSourcesResetBtn': 'Reset to Default',
+            'chat.styleSourcesSaved': 'Style sources updated.',
+            'chat.styleSourcesSaveFailed': 'Failed to save: {reason}',
+            'chat.styleSourceInvalidScheme': 'An address must start with https:// or be a path on this site, or be left empty.',
+            'chat.styleSourceTooLong': 'Each address must be at most {max} characters.',
+            'chat.styleSourceLoadFailed': 'The code from source "{url}" could not be loaded, so everything has been rolled back to the defaults.',
+            'chat.styleSourcesRiskTitle': 'Security Warning',
+            'chat.styleSourcesRiskIntro': 'Only use style sources that you control or fully trust. The files you point to replace this interface and are loaded into your browser.',
+            'chat.styleSourcesRiskJs': 'An embedded chat.js runs with your login credentials. If the source is untrusted, an attacker could use it to steal your account, read your conversations, or send messages as you.',
+            'chat.styleSourcesRiskAck': 'I have verified that these sources are trustworthy, and I accept the risk.',
+            'chat.styleSourcesRiskConfirmBtn': 'Confirm and Save'
         },
 
         'zh-CN': {
             // General
-            'app.title': 'Oxype 即时通讯平台',
-            'app.tagline': '无缝连接，实时沟通',
+            'app.title': 'Oxype',
             'common.loading': '加载中...',
             'common.error': '发生错误',
             'common.networkError': '无法连接到服务器（服务器未启动）',
@@ -153,7 +166,6 @@
 
             // Auth / Register Page
             'auth.title': '欢迎使用 Oxype',
-            'auth.subtitle': '注册账号以开始即时聊天',
             'auth.tabRegister': '注册',
             'auth.tabLogin': '登录',
             'auth.usernameLabel': '用户名',
@@ -172,16 +184,16 @@
             'auth.errPasswordLength': '密码长度必须在 6 到 20 个字符之间。',
             'auth.errPasswordMismatch': '两次输入的密码不一致。',
             'auth.errUserIdRequired': '请输入有效的数字用户 ID。',
-            'auth.registerSuccess': '注册成功！正在跳转至聊天界面...',
-            'auth.loginSuccess': '登录成功！正在跳转至聊天界面...',
+            'auth.registerSuccess': '注册成功！正在跳转...',
+            'auth.loginSuccess': '登录成功！正在跳转...',
             'auth.registeredInfo': '账号已创建！您的用户 ID 为: {userId}',
 
             // Chat Page
-            'chat.title': 'Oxype 聊天',
+            'chat.title': 'Oxype',
             'chat.sessionsTitle': '会话列表',
             'chat.noSessions': '暂无可用的会话',
             'chat.noSessionsHint': '当您加入或创建新会话后，会在此处显示。',
-            'chat.selectSessionHint': '从左侧列表中选择一个会话以开始聊天',
+            'chat.selectSessionHint': '从左侧列表中选择一个会话',
             'chat.inputPlaceholder': '输入消息...',
             'chat.sendBtn': '发送',
             'chat.logoutBtn': '退出登录',
@@ -259,7 +271,23 @@
             'chat.loadFailed': '加载失败：{reason}',
             'chat.joinErrInvalidUuid': '邀请 UUID 无效或已过期。',
             'chat.errUnauthorized': '登录状态已失效，请重新登录。',
-            'chat.errForbidden': '您没有权限执行该操作。'
+            'chat.errForbidden': '您没有权限执行该操作。',
+            'chat.styleSourcesTitle': '样式来源',
+            'chat.styleSourcesOpenBtn': '配置',
+            'chat.styleSourcesHint': '可将界面指向您自己的 chat.html、chat.css 或 chat.js。留空则使用内置文件。地址可以是 https:// 链接，也可以是本站路径，且不超过 {max} 个字符。',
+            'chat.styleSourcesDefaults': '内置：{html} · {css} · {js}',
+            'chat.styleSourcesSaveBtn': '保存',
+            'chat.styleSourcesResetBtn': '恢复默认',
+            'chat.styleSourcesSaved': '样式来源已更新。',
+            'chat.styleSourcesSaveFailed': '保存失败：{reason}',
+            'chat.styleSourceInvalidScheme': '地址必须以 https:// 开头，或为本站路径，或留空。',
+            'chat.styleSourceTooLong': '每个地址不得超过 {max} 个字符。',
+            'chat.styleSourceLoadFailed': '来源“{url}”的代码未能正常加载，已全部回退至默认',
+            'chat.styleSourcesRiskTitle': '安全警告',
+            'chat.styleSourcesRiskIntro': '请仅使用您自己控制或完全信任的样式来源。您指向的文件会替换当前界面，并加载到您的浏览器中。',
+            'chat.styleSourcesRiskJs': '外链的 chat.js 会以您的登录凭证运行。若来源不可信，攻击者可能借此盗取您的账号、读取您的会话内容，或以您的身份发送消息。',
+            'chat.styleSourcesRiskAck': '我已确认上述来源可信，并自行承担相应风险。',
+            'chat.styleSourcesRiskConfirmBtn': '确认并保存'
         }
     };
 

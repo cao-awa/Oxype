@@ -22,7 +22,11 @@ import com.github.kusa233.oxype.exception.request.MissingParameterException
 import com.github.kusa233.oxype.message.MessageManager
 import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.manager.SessionManager
+import com.github.kusa233.oxype.user.StyleSources
 import com.github.kusa233.oxype.user.User
+import com.github.kusa233.oxype.user.cssSource
+import com.github.kusa233.oxype.user.htmlSource
+import com.github.kusa233.oxype.user.jsSource
 import com.github.kusa233.oxype.user.manager.UserManager
 import io.netty.handler.codec.http.HttpResponseStatus
 import org.apache.logging.log4j.LogManager
@@ -326,6 +330,57 @@ object OxypeHttpServer {
         }
     }
 
+    /**
+     * Caller-visible view of a user's custom front-end sources.
+     *
+     * The stored override and the bundled default are both sent, so the client never
+     * hardcodes the default paths and the settings form can show what an empty field
+     * resolves to.
+     */
+    private fun styleSourcesView(user: User): JSONObject {
+        return JSONObject {
+            "chatHtmlSource" set user.htmlSource
+            "chatCssSource" set user.cssSource
+            "chatJsSource" set user.jsSource
+            "defaultChatHtmlSource" set StyleSources.DEFAULT_HTML
+            "defaultChatCssSource" set StyleSources.DEFAULT_CSS
+            "defaultChatJsSource" set StyleSources.DEFAULT_JS
+            "maxLength" set StyleSources.MAX_LENGTH
+            "httpsPrefix" set StyleSources.HTTPS_PREFIX
+        }
+    }
+
+    /**
+     * Rejects an unacceptable source with a 400 naming the offending field.
+     *
+     * Failing here rather than storing the value keeps the invariant that anything
+     * persisted is either empty (use the bundled file), an absolute https URL, or a
+     * path on this same origin.
+     */
+    private fun assertValidStyleSource(field: String, value: String, context: KalmiaHttpContext) {
+        if (StyleSources.isValid(value)) {
+            return
+        }
+        val reason = when {
+            value.trim().length > StyleSources.MAX_LENGTH ->
+                "must be at most ${StyleSources.MAX_LENGTH} characters"
+            value.trim().startsWith("//") ->
+                "must not be a protocol-relative URL"
+            value.trim().contains("..") ->
+                "must not contain '..'"
+            else ->
+                "must be an '${StyleSources.HTTPS_PREFIX}' URL or a path on this site"
+        }
+        with(context) {
+            abortWith(
+                IllegalArgumentException("Invalid '$field': $reason"),
+                HttpResponseStatus.BAD_REQUEST,
+                this
+            )
+        }
+        throw IllegalStateException("Unreachable: the request was aborted")
+    }
+
     @JvmStatic
     fun start() {
         KalmiaHttpService.start(http {
@@ -404,6 +459,78 @@ object OxypeHttpServer {
                 }
             }
 
+            /**
+             * The caller's custom front-end sources.
+             *
+             * Empty values are returned alongside the bundled defaults so the loader
+             * can fall back without hardcoding paths, and so the settings UI can show
+             * the user what an empty field will actually resolve to.
+             */
+            route("getStyleSources/{userid}") {
+                val userid by placeholder<Long>("userid")
+                get {
+                    requireUserFromQuery { caller ->
+                        val user = UserManager.getUser(userid)
+                        if (user == null || caller.id != userid) {
+                            abortWith(
+                                IllegalArgumentException("User not found"),
+                                HttpResponseStatus.NOT_FOUND,
+                                this
+                            )
+                        } else {
+                            styleSourcesView(user)
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Stores the caller's custom front-end sources.
+             *
+             * Each field is optional: an absent or empty value clears the override so
+             * the bundled file is used. A non-empty value must be an absolute
+             * `https://` URL of at most [StyleSources.MAX_LENGTH] characters.
+             */
+            route("updateStyleSources/{userid}") {
+                val userid by placeholder<Long>("userid")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { caller ->
+                            if (caller.id != userid) {
+                                abortWith(
+                                    AuthenticationException("You can only change your own sources"),
+                                    HttpResponseStatus.FORBIDDEN,
+                                    this
+                                )
+                            }
+
+                            // An absent field means "no override", which is the same
+                            // state as an explicitly cleared one.
+                            val html = json.getString("chatHtmlSource") ?: ""
+                            val css = json.getString("chatCssSource") ?: ""
+                            val js = json.getString("chatJsSource") ?: ""
+
+                            assertValidStyleSource("chatHtmlSource", html, this)
+                            assertValidStyleSource("chatCssSource", css, this)
+                            assertValidStyleSource("chatJsSource", js, this)
+
+                            val updated = UserManager.updateStyleSources(userid, html, css, js)
+                            if (updated == null) {
+                                abortWith(
+                                    IllegalArgumentException("User not found"),
+                                    HttpResponseStatus.NOT_FOUND,
+                                    this
+                                )
+                                // abortWith always throws; this keeps `updated` non-null
+                                // for the type checker.
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+                            styleSourcesView(updated)
+                        }
+                    }
+                }
+            }
+
             route("getJoinedSessions/{userid}") {
                 get {
                     requireUserFromQuery { caller ->
@@ -468,7 +595,7 @@ object OxypeHttpServer {
                     requireJsonBody { json ->
                         val name = assertString(json.getString("name"), "name")
                         // Description is optional; a missing or blank value stores as empty.
-                        val description = json.getString("description") { "" } ?: ""
+                        val description = json.getString("description") { "" }
 
                         requireUser(json) { user ->
                             val session = SessionManager.createSession(name, user.id, description)

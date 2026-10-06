@@ -1,5 +1,5 @@
 /**
- * Oxype Web Client - Instant Messaging Chat Page Stylesheet
+ * Oxype Web Client - Page Stylesheet
  * Controls two-pane chat layout, sidebar, active conversation view, message bubbles, and composer.
  */
 
@@ -579,6 +579,130 @@
 .dialog-body {
     max-height: 62vh;
     overflow-y: auto;
+}
+
+/* Style source (chat.html / chat.css / chat.js) toast, separate from the settings toast */
+.style-sources-hint {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 0 0 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+/* The bundled paths are shown in monospace so they read as literal filenames */
+.style-sources-defaults {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    opacity: 0.85;
+}
+
+#styleSourcesDialog .form-group {
+    margin-bottom: 10px;
+}
+
+#styleSourcesDialog .form-label {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+
+#styleSourcesDialog .dialog-actions {
+    gap: 8px;
+}
+
+/* Security warning shown before style sources are saved */
+.style-sources-risk-text {
+    margin: 0 0 10px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+/* The sentence about embedded JavaScript is the part that actually matters, so it
+   gets the warning accent rather than reading as more grey body copy. */
+.style-sources-risk-js {
+    padding: 9px 11px;
+    border-left: 4px solid var(--warning-color);
+    border-radius: var(--radius-sm);
+    background-color: var(--warning-light);
+    color: var(--text-primary);
+}
+
+/* The exact values being trusted: shown as literals so nothing is hidden behind a
+   summary. Hidden entirely when empty, which is why it has no default padding. */
+.style-sources-risk-list {
+    margin: 0 0 12px;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.style-sources-risk-list:empty {
+    display: none;
+}
+
+.style-sources-risk-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.style-sources-risk-list .style-sources-risk-field {
+    flex-shrink: 0;
+    min-width: 58px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* Long URLs must wrap instead of stretching the dialog */
+.style-sources-risk-list .style-sources-risk-value {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text-primary);
+    word-break: break-all;
+}
+
+.style-sources-risk-ack {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin: 2px 0 14px;
+    padding: 10px 11px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background-color: var(--bg-sidebar);
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.style-sources-risk-ack input[type="checkbox"] {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    margin: 1px 0 0;
+    accent-color: var(--primary-color);
+    cursor: pointer;
+}
+
+/* A disabled confirm is the whole point of the checkbox, so make that visible */
+#styleSourcesRiskConfirmBtn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+/* Row in the settings toast that opens the style source toast */
+.btn-settings-open {
+    flex-shrink: 0;
 }
 
 .settings-row {

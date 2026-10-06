@@ -1,0 +1,1235 @@
+/**
+ * Oxype Web Client - Classic skin
+ *
+ * A self-contained alternative to the default chat.css, kept entirely inside this
+ * directory. Nothing in the default interface refers to it: the only way to load it
+ * is to point the "Style Source" fields at /classic/chat.html, /classic/chat.css and
+ * /classic/chat.js.
+ *
+ * Visual language: a mid-90s desktop application. Warm beige panels, square corners,
+ * two-pixel bevels (light from the top-left, shadow to the bottom-right), inset wells
+ * for text entry, faint ruled paper behind the transcript, and serif headings -- the
+ * way productivity software looked before flat design.
+ *
+ * It still honours the user's light/dark and accent choice: the skin defines its own
+ * palette in --cl-* tokens below, derived per theme, and the accent colour drives the
+ * caption bars and selected rows. Everything that normally lives in the default
+ * chat.css -- dialogs, form fields, the transcript -- is restated here, because
+ * loading this file replaces that stylesheet rather than adding to it.
+ */
+
+/* --------------------------------------------------------------- palette ----- */
+
+/*
+ * Skin-local tokens. Kept separate from the shared --bg-surface / --text-primary
+ * family so the retro palette can diverge from the flat default without editing the
+ * non-overridable style.css.
+ */
+:root {
+    /* Panel face: the warm grey-beige of 90s window chrome */
+    --cl-face: #d6cebd;
+    --cl-face-hover: #e2dbcb;
+    --cl-face-active: #c6bda9;
+    /* Paper: the reading surface behind the transcript, faintly ruled */
+    --cl-paper: #f4efe2;
+    --cl-paper-rule: rgba(90, 78, 58, 0.055);
+    /* Wells: sunken areas such as text fields and lists */
+    --cl-well: #fffdf4;
+
+    /* Bevel edges. A raised edge is light top/left, dark bottom/right; a sunken
+       edge is the reverse. This is what gives the chrome its depth. */
+    --cl-edge-light: #fffaf0;
+    --cl-edge-dark: #8d836f;
+    --cl-edge-darker: #5f5849;
+
+    /* Hairlines between panes */
+    --cl-line: #a99e88;
+    --cl-line-soft: #c2b8a3;
+
+    --cl-text: #2e2820;
+    --cl-text-dim: #6d6353;
+    --cl-text-faint: #8d8271;
+
+    /* Caption bar behind dialog titles and the active list row */
+    --cl-caption: var(--primary-color);
+
+    --cl-serif: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+    --cl-mono: "Courier New", Courier, var(--font-mono);
+
+    /* Retro interfaces were square; 2px keeps a hint of softness without rounding */
+    --cl-radius: 0px;
+    --cl-bevel: 2px;
+}
+
+/* Dark theme: the same chrome, as if the machine were running a dim CRT */
+[data-theme="dark"] {
+    --cl-face: #322e28;
+    --cl-face-hover: #3d3830;
+    --cl-face-active: #29251f;
+
+    --cl-paper: #211e19;
+    --cl-paper-rule: rgba(0, 0, 0, 0.18);
+    --cl-well: #171410;
+
+    --cl-edge-light: #4e473c;
+    --cl-edge-dark: #14120e;
+    --cl-edge-darker: #0b0a08;
+
+    --cl-line: #221f1a;
+    --cl-line-soft: #443d33;
+
+    --cl-text: #ece3d2;
+    --cl-text-dim: #a89c88;
+    --cl-text-faint: #7d7362;
+}
+
+/* ----------------------------------------------------------- primitives ------ */
+
+/*
+ * The default chat.css defines .icon-svg, but loading this skin replaces that file,
+ * so the helper has to be restated here or every inline icon loses its alignment.
+ */
+.icon-svg {
+    display: inline-block;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+/*
+ * Bevels carry the depth in this skin: a raised edge is light on the top and left
+ * with shadow on the bottom and right, and a sunken edge is the reverse. Plain CSS
+ * has no mixins, so each rule below states its own border colours directly.
+ */
+body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    /* Faint vertical weave, like the dithered fills of the era */
+    background-image: repeating-linear-gradient(
+        90deg,
+        rgba(0, 0, 0, 0.014) 0 1px,
+        transparent 1px 3px
+    );
+}
+
+/* Two-column frameset: fixed rail on the left, flexible transcript on the right */
+.classic-frameset {
+    display: grid;
+    grid-template-columns: 272px 1fr;
+    height: 100vh;
+    gap: 0;
+}
+
+.classic-rail {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background-color: var(--cl-face);
+    /* A raised panel edge, so the rail reads as a separate pane */
+    border-right: var(--cl-bevel) solid;
+    border-right-color: var(--cl-edge-dark);
+}
+
+.classic-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background-color: var(--cl-face);
+}
+
+/* ------------------------------------------------------------------ rail ----- */
+
+/* Caption-bar brand block: dark band with inverse text, like a title bar */
+.classic-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 12px;
+    background-color: var(--cl-caption);
+    color: var(--text-inverse);
+    border-bottom: var(--cl-bevel) solid;
+    border-bottom-color: var(--cl-edge-darker);
+}
+
+.classic-brand-mark {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    /* Sunken square badge, as an old app icon would sit */
+    border: 1px solid;
+    border-color: var(--cl-edge-darker);
+    background-color: var(--cl-face);
+    color: var(--primary-active, var(--primary-color));
+    font-family: var(--cl-serif);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.classic-brand-text {
+    font-family: var(--cl-serif);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.28);
+}
+
+.classic-rail-actions {
+    padding: 10px 10px 6px;
+}
+
+.classic-rail-heading {
+    padding: 8px 12px 5px;
+    font-family: var(--cl-serif);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--cl-text-dim);
+    /* Engraved label effect: light below, as if cut into the face */
+    text-shadow: 1px 1px 0 var(--cl-edge-light);
+}
+
+/* The list sits in a sunken well, like a file list in a dialog */
+.classic-session-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    margin: 2px 10px 10px;
+    padding: 3px;
+    background-color: var(--cl-well);
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+}
+
+/* Session rows: avatar, name, and the latest-message preview line */
+.session-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 7px 8px;
+    margin-bottom: 1px;
+    border: 1px solid transparent;
+    border-radius: var(--cl-radius);
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.session-item:hover {
+    background-color: var(--cl-face-hover);
+}
+
+/* Selection inverts the row, the way a highlighted list entry used to */
+.session-item.active {
+    background-color: var(--cl-caption);
+    border-color: var(--cl-edge-darker);
+    color: var(--text-inverse);
+}
+
+.session-item.active .session-name {
+    color: var(--text-inverse);
+}
+
+.session-item.active .session-subtext,
+.session-item.active .session-last-message {
+    color: var(--text-inverse);
+    opacity: 0.82;
+}
+
+.session-avatar {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    font-family: var(--cl-serif);
+    font-weight: 700;
+    font-size: 14px;
+}
+
+.session-item.active .session-avatar {
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+}
+
+.session-details {
+    min-width: 0;
+    flex: 1;
+}
+
+.session-name {
+    font-size: 13px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Second line: "sender: message content", a single ellipsised line */
+.session-subtext,
+.session-last-message {
+    margin-top: 2px;
+    font-family: var(--cl-mono);
+    font-size: 11px;
+    color: var(--cl-text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.empty-sessions-placeholder {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 22px 12px;
+    text-align: center;
+}
+
+.empty-sessions-text {
+    font-family: var(--cl-serif);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--cl-text-dim);
+}
+
+.empty-sessions-hint {
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--cl-text-faint);
+}
+
+/* Status bar along the bottom of the rail */
+.classic-rail-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    background-color: var(--cl-face);
+    border-top: 1px solid;
+    border-top-color: var(--cl-edge-light);
+}
+
+.user-profile-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.user-avatar-sm {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-caption);
+    color: var(--text-inverse);
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    font-family: var(--cl-serif);
+    font-weight: 700;
+    font-size: 13px;
+}
+
+.user-meta-text {
+    min-width: 0;
+}
+
+.user-display-name {
+    font-size: 12.5px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.user-id-badge {
+    font-family: var(--cl-mono);
+    font-size: 10.5px;
+    color: var(--cl-text-faint);
+}
+
+/* --------------------------------------------------------------- buttons ----- */
+
+/* Raised, square, bold-label buttons -- the default control of the era */
+.classic-btn,
+.classic-frameset .btn-primary,
+.classic-frameset .btn-secondary,
+.classic-frameset .btn-danger,
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 13px;
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.classic-btn:hover,
+.classic-frameset .btn-primary:hover,
+.classic-frameset .btn-secondary:hover,
+.classic-frameset .btn-danger:hover,
+.btn-primary:hover,
+.btn-secondary:hover,
+.btn-danger:hover {
+    background-color: var(--cl-face-hover);
+}
+
+/* Pressing flips the bevel inward and nudges the label, so a click feels physical */
+.classic-btn:active,
+.classic-frameset .btn-primary:active,
+.classic-frameset .btn-secondary:active,
+.btn-primary:active,
+.btn-secondary:active,
+.btn-danger:active {
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    padding: 7px 12px 5px 14px;
+}
+
+.classic-btn:focus-visible,
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn-danger:focus-visible,
+.classic-icon-btn:focus-visible,
+.session-item:focus-visible,
+.classic-input:focus-visible,
+.form-input:focus-visible {
+    outline: 1px dotted var(--cl-text);
+    outline-offset: -4px;
+}
+
+.classic-btn:disabled,
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-danger:disabled {
+    color: var(--cl-text-faint);
+    cursor: default;
+    /* Embossed-looking disabled label, as when a control was greyed out */
+    text-shadow: 1px 1px 0 var(--cl-edge-light);
+}
+
+.classic-btn-block {
+    width: 100%;
+}
+
+/* The affirmative button keeps the accent, but still looks like a physical cap */
+.classic-btn-primary,
+.classic-frameset .btn-primary,
+.btn-primary {
+    background-color: var(--cl-caption);
+    color: var(--text-inverse);
+    border-color: var(--cl-edge-light) var(--cl-edge-darker) var(--cl-edge-darker) var(--cl-edge-light);
+}
+
+.classic-btn-primary:hover,
+.classic-frameset .btn-primary:hover,
+.btn-primary:hover {
+    background-color: var(--primary-hover);
+}
+
+/* Destructive actions read as danger without leaving the bevel language */
+.classic-frameset .btn-danger,
+.btn-danger,
+.settings-logout-row .classic-btn,
+.btn-logout-action {
+    color: var(--danger-color);
+}
+
+.classic-icon-btn {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    cursor: pointer;
+}
+
+.classic-icon-btn:hover {
+    background-color: var(--cl-face-hover);
+}
+
+.classic-icon-btn:active {
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+}
+
+/* ------------------------------------------------------------------ controls -- */
+
+/* Shared dropdowns, restyled as sunken wells with a raised cap */
+.select-control {
+    padding: 4px 6px;
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+    color: var(--cl-text);
+    font-family: inherit;
+    font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- header ----- */
+
+.classic-main-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 14px;
+    background-color: var(--cl-face);
+    border-bottom: var(--cl-bevel) solid;
+    border-bottom-color: var(--cl-edge-dark);
+}
+
+.classic-main-title-wrap {
+    min-width: 0;
+}
+
+.classic-main-title {
+    margin: 0;
+    font-family: var(--cl-serif);
+    font-size: 15.5px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.classic-main-sub {
+    margin-top: 1px;
+    font-family: var(--cl-mono);
+    font-size: 11px;
+    color: var(--cl-text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------ transcript ----- */
+
+/* Ruled paper inside a deep sunken frame -- the reading surface */
+.classic-transcript,
+.messages-container {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 6px;
+    background-color: var(--cl-paper);
+    background-image: repeating-linear-gradient(
+        0deg,
+        var(--cl-paper-rule) 0 1px,
+        transparent 1px 4px
+    );
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+}
+
+/* Date separator: label at the far left, divider filling the rest of the row */
+.message-date-separator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.message-date-label {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    font-family: var(--cl-serif);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--cl-text-dim);
+    background-color: var(--cl-face);
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+}
+
+.message-date-line {
+    flex: 1;
+    height: 1px;
+    background-color: var(--cl-line-soft);
+}
+
+/* Incoming rows sit left, outgoing rows are mirrored to the right */
+.message-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    max-width: 74%;
+}
+
+.message-row.incoming {
+    align-self: flex-start;
+}
+
+.message-row.outgoing {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+
+.message-avatar {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    font-family: var(--cl-serif);
+    font-weight: 700;
+    font-size: 13px;
+}
+
+/* Bubbles are raised cards rather than rounded blobs */
+.message-bubble {
+    padding: 7px 10px;
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+}
+
+.message-row.outgoing .message-bubble {
+    background-color: var(--cl-face-hover);
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+}
+
+/* Sender name above the content, then the clock time below it */
+.message-sender {
+    margin-bottom: 2px;
+    font-family: var(--cl-serif);
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--primary-active, var(--primary-color));
+}
+
+.message-row.outgoing .message-sender {
+    text-align: right;
+}
+
+.message-content {
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.message-timestamp {
+    margin-top: 2px;
+    font-family: var(--cl-mono);
+    font-size: 10px;
+    color: var(--cl-text-faint);
+    text-align: right;
+}
+
+/* Placeholder shown while no conversation is selected, or when one is empty */
+.empty-chat-splash {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex: 1;
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--cl-text-faint);
+    font-family: var(--cl-serif);
+}
+
+.empty-chat-splash-icon {
+    color: var(--cl-text-faint);
+    opacity: 0.6;
+}
+
+/* ------------------------------------------------------------- composer ------ */
+
+.classic-composer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px 10px;
+    background-color: var(--cl-face);
+    border-top: var(--cl-bevel) solid;
+    border-top-color: var(--cl-edge-light);
+}
+
+.classic-input {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 9px;
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+    color: var(--cl-text);
+    font-family: inherit;
+    font-size: 13px;
+}
+
+.classic-input:disabled,
+.form-input:disabled {
+    background-color: var(--cl-face-active);
+    color: var(--cl-text-faint);
+}
+
+/* --------------------------------------------------------------- dialogs ----- */
+
+/*
+ * These dialog, form and settings rules normally come from the default chat.css.
+ * Loading the classic skin replaces that file, so the shared classes it defines are
+ * restated here against the skin tokens.
+ */
+.dialog-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    /* A dithered-looking scrim rather than a smooth blur */
+    background-color: rgba(28, 22, 12, 0.42);
+    background-image: repeating-linear-gradient(
+        45deg,
+        rgba(255, 255, 255, 0.035) 0 2px,
+        transparent 2px 4px
+    );
+}
+
+.interactive-dialog,
+.classic-dialog {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    z-index: 101;
+    width: min(440px, calc(100vw - 32px));
+    max-height: 86vh;
+    overflow-y: auto;
+    transform: translate(-50%, -50%);
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-darker) var(--cl-edge-darker) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* Caption bar, with the title as serif and a raised close cap on the right */
+.dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 5px 6px 5px 10px;
+    background-color: var(--cl-caption);
+    color: var(--text-inverse);
+    border-bottom: 1px solid;
+    border-bottom-color: var(--cl-edge-darker);
+}
+
+.dialog-title {
+    margin: 0;
+    font-family: var(--cl-serif);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.25);
+}
+
+.dialog-close-btn {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 20px;
+    flex-shrink: 0;
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    text-shadow: none;
+}
+
+.dialog-close-btn:hover {
+    background-color: var(--cl-face-hover);
+}
+
+/* The shared 18px glyph is too large for the small caption-bar cap */
+.dialog-close-btn .icon-svg {
+    width: 11px;
+    height: 11px;
+}
+
+.dialog-close-btn:active {
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+}
+
+.dialog-body {
+    padding: 12px;
+}
+
+.settings-dialog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.dialog-form {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Buttons sit on a raised footer strip, as dialog buttons used to */
+.dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 7px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid;
+    border-top-color: var(--cl-edge-dark);
+    box-shadow: 0 1px 0 var(--cl-edge-light) inset;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 9px;
+}
+
+.form-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--cl-text-dim);
+}
+
+.form-input {
+    padding: 6px 8px;
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+    color: var(--cl-text);
+    font-family: inherit;
+    font-size: 12.5px;
+}
+
+.form-input:focus,
+.classic-input:focus,
+.select-control:focus {
+    outline: none;
+}
+
+/* Rows in the settings toast, separated by engraved rules */
+.settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid;
+    border-bottom-color: var(--cl-line-soft);
+    box-shadow: 0 1px 0 var(--cl-edge-light);
+}
+
+.settings-row:last-child {
+    border-bottom: none;
+    box-shadow: none;
+}
+
+.settings-row-label {
+    font-size: 12.5px;
+    font-weight: 700;
+}
+
+.settings-logout-row .settings-row-label {
+    color: var(--danger-color);
+}
+
+.btn-settings-open {
+    flex-shrink: 0;
+}
+
+/* Style source toast: explanatory hint plus the three path fields */
+.style-sources-hint {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 0 0 9px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--cl-text-dim);
+}
+
+.style-sources-defaults {
+    font-family: var(--cl-mono);
+    font-size: 10.5px;
+    opacity: 0.85;
+}
+
+#styleSourcesDialog .form-label {
+    font-family: var(--cl-mono);
+    font-size: 11.5px;
+}
+
+#styleSourcesDialog .dialog-actions {
+    gap: 7px;
+}
+
+/* ------------------------------------------------ security warning toast ------ */
+
+/*
+ * Shown before style sources are saved. The retro vocabulary makes this read like a
+ * modal alert box from a 90s application, which suits the content: a warning that
+ * interrupts and demands acknowledgement before proceeding.
+ */
+.style-sources-risk-text {
+    margin: 0 0 9px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--cl-text-dim);
+}
+
+/* The embedded-JavaScript sentence is the actual hazard, so it is framed rather than
+   left as more grey body copy. A sunken well, in keeping with the skin. */
+.style-sources-risk-js {
+    padding: 8px 10px;
+    border: 1px solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+    color: var(--cl-text);
+}
+
+/* The sentence starts with a warning glyph rather than an icon font or SVG */
+.style-sources-risk-js::before {
+    content: "\26A0\FE0E";
+    margin-right: 6px;
+    color: var(--danger-color);
+}
+
+/* The exact values being trusted, listed as literals */
+.style-sources-risk-list {
+    margin: 0 0 10px;
+    padding: 6px 8px;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    border: 1px solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+}
+
+.style-sources-risk-list:empty {
+    display: none;
+    padding: 0;
+    border: none;
+}
+
+.style-sources-risk-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.style-sources-risk-list .style-sources-risk-field {
+    flex-shrink: 0;
+    min-width: 54px;
+    font-family: var(--cl-mono);
+    font-size: 10.5px;
+    color: var(--cl-text-faint);
+}
+
+.style-sources-risk-list .style-sources-risk-value {
+    font-family: var(--cl-mono);
+    font-size: 11px;
+    color: var(--cl-text);
+    word-break: break-all;
+}
+
+/* The acknowledgement: a sunken well holding a real checkbox, squared off */
+.style-sources-risk-ack {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 2px 0 13px;
+    padding: 8px 9px;
+    border: 1px solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--cl-text);
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Square checkbox in the bevel language; native rendering is kept so the control
+   stays recognisable and keyboard-operable. */
+.style-sources-risk-ack input[type="checkbox"] {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    margin: 2px 0 0;
+    border-radius: 0;
+    accent-color: var(--cl-caption);
+    cursor: pointer;
+}
+
+.style-sources-risk-ack:hover {
+    background-color: var(--cl-face-hover);
+}
+
+/* A disabled confirm is the point of the checkbox, so the skin must show it clearly */
+#styleSourcesRiskConfirmBtn:disabled {
+    color: var(--cl-text-faint);
+    opacity: 0.7;
+    cursor: default;
+}
+
+/* ----------------------------------------------- conversation info toast ------ */
+
+.classic-info-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid;
+    border-bottom-color: var(--cl-line-soft);
+}
+
+.classic-info-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--cl-text-dim);
+}
+
+.classic-info-value {
+    font-family: var(--cl-mono);
+    font-size: 11.5px;
+    text-align: right;
+    word-break: break-all;
+}
+
+.classic-chiplist {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 9px;
+}
+
+.invite-empty {
+    font-size: 12px;
+    color: var(--cl-text-faint);
+}
+
+/* One invite UUID: monospace code plus copy/revoke actions, in a sunken strip */
+.invite-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px;
+    border: 1px solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-well);
+}
+
+.invite-code {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--cl-mono);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.invite-copy-btn,
+.invite-revoke-btn,
+.member-remove-btn {
+    flex-shrink: 0;
+    padding: 3px 8px;
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.invite-copy-btn:hover,
+.invite-revoke-btn:hover,
+.member-remove-btn:hover {
+    background-color: var(--cl-face-hover);
+}
+
+.invite-copy-btn:active,
+.invite-revoke-btn:active,
+.member-remove-btn:active {
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+}
+
+.invite-revoke-btn:hover,
+.member-remove-btn {
+    color: var(--danger-color);
+}
+
+/* ------------------------------------------------------- member roster ------- */
+
+.classic-memberlist {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.member-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 7px;
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+}
+
+.member-avatar {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    font-family: var(--cl-serif);
+    font-weight: 700;
+    font-size: 12.5px;
+}
+
+.member-meta {
+    flex: 1;
+    min-width: 0;
+}
+
+.member-name {
+    font-size: 12.5px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.member-role {
+    font-family: var(--cl-mono);
+    font-size: 10.5px;
+    color: var(--cl-text-faint);
+}
+
+/*
+ * Toasts match the chrome: raised beige cards with a square accent edge.
+ *
+ * Scoped through the container so the rule outranks the shared .toast.toast-* pair
+ * in style.css, which sets its own background and left border per type. The type
+ * colours are then re-declared here at the same specificity, because a shorthand
+ * border-color would otherwise flatten the coloured left edge this skin keeps.
+ */
+#toast-container .toast {
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-left-width: 6px;
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.25);
+}
+
+#toast-container .toast.toast-info {
+    border-left-color: var(--primary-color);
+}
+
+#toast-container .toast.toast-success {
+    border-left-color: var(--success-color);
+}
+
+#toast-container .toast.toast-error {
+    border-left-color: var(--danger-color);
+}
+
+#toast-container .toast.toast-warning {
+    border-left-color: var(--warning-color);
+}
+
+/* ------------------------------------------------------------- narrow -------- */
+
+/* Collapse to a single column so the transcript keeps a usable width on phones */
+@media (max-width: 720px) {
+    .classic-frameset {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+    }
+
+    .classic-rail {
+        border-right: none;
+        border-bottom: var(--cl-bevel) solid;
+        border-bottom-color: var(--cl-edge-dark);
+    }
+
+    .classic-session-list {
+        max-height: 34vh;
+    }
+
+    .classic-transcript,
+    .messages-container {
+        margin: 3px;
+    }
+}

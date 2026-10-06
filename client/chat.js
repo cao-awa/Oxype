@@ -1,5 +1,5 @@
 /**
- * Oxype Web Client - Instant Messaging Chat Page Logic
+ * Oxype Web Client - Page Logic
  * Manages user authentication verification, session listing via getJoinedSessions,
  * session creation via createSession, session details via getSession, user profile via getUser,
  * and settings dialog with language/theme/logout controls.
@@ -64,6 +64,34 @@
     let manageDialog;
     let closeManageBtnEl;
     let openManageBtnEl;
+
+    // Style source inputs (chat.html / chat.css / chat.js overrides) and their toast
+    let styleSourcesDialogEl;
+    let openStyleSourcesBtnEl;
+    let closeStyleSourcesBtnEl;
+    let styleSourceHtmlEl;
+    let styleSourceCssEl;
+    let styleSourceJsEl;
+    let styleSourcesHintEl;
+    let styleSourcesSaveBtnEl;
+    let styleSourcesResetBtnEl;
+
+    // Style source security warning, built on first use (see the builder function)
+    let styleSourcesRiskDialogEl;
+    let styleSourcesRiskScrimEl;
+    let closeStyleSourcesRiskBtnEl;
+    let styleSourcesRiskListEl;
+    let styleSourcesRiskCheckboxEl;
+    let styleSourcesRiskCancelBtnEl;
+    let styleSourcesRiskConfirmBtnEl;
+
+    // The validated values the warning is currently asking the user to accept. The
+    // save only proceeds once the user confirms, so they are held here meanwhile.
+    let pendingStyleSources = null;
+
+    // Bundled defaults and limits reported by the server for the style sources
+    let styleSourceDefaults = { html: '/chat.html', css: '/chat.css', js: '/chat.js' };
+    let styleSourceMaxLength = 128;
 
     // Settings Elements
     let settingsBtn;
@@ -145,6 +173,22 @@
         closeSettingsBtn = document.getElementById('closeSettingsBtn');
         dialogLogoutBtn = document.getElementById('dialogLogoutBtn');
         dialogOverlay = document.getElementById('dialogOverlay');
+
+        // Style source (chat.html / chat.css / chat.js) references, in their own toast
+        styleSourcesDialogEl = document.getElementById('styleSourcesDialog');
+        openStyleSourcesBtnEl = document.getElementById('openStyleSourcesBtn');
+        closeStyleSourcesBtnEl = document.getElementById('closeStyleSourcesBtn');
+        styleSourceHtmlEl = document.getElementById('styleSourceHtml');
+        styleSourceCssEl = document.getElementById('styleSourceCss');
+        styleSourceJsEl = document.getElementById('styleSourceJs');
+        styleSourcesHintEl = document.getElementById('styleSourcesHint');
+        styleSourcesSaveBtnEl = document.getElementById('styleSourcesSaveBtn');
+        styleSourcesResetBtnEl = document.getElementById('styleSourcesResetBtn');
+
+        // The security warning is built on demand rather than read from the page: a
+        // user-supplied chat.html performs the save too, and such a page will not
+        // contain markup added here. Building it keeps the warning present whatever
+        // page is loaded. See buildStyleSourcesRiskDialog().
 
         // Check authentication status
         const auth = window.OxypeCore ? window.OxypeCore.getStoredAuth() : null;
@@ -282,6 +326,26 @@
             dialogLogoutBtn.addEventListener('click', handleLogout);
         }
 
+        // Style source toast controls
+        if (openStyleSourcesBtnEl) {
+            openStyleSourcesBtnEl.addEventListener('click', openStyleSourcesDialog);
+        }
+
+        if (closeStyleSourcesBtnEl) {
+            closeStyleSourcesBtnEl.addEventListener('click', closeAllDialogs);
+        }
+
+        if (styleSourcesSaveBtnEl) {
+            styleSourcesSaveBtnEl.addEventListener('click', handleSaveStyleSources);
+        }
+
+        if (styleSourcesResetBtnEl) {
+            styleSourcesResetBtnEl.addEventListener('click', handleResetStyleSources);
+        }
+
+        // Style source security warning controls are bound when the dialog is built,
+        // since it does not exist until a save is attempted.
+
         // Dialog overlay click to dismiss
         if (dialogOverlay) {
             dialogOverlay.addEventListener('click', closeAllDialogs);
@@ -327,6 +391,528 @@
         if (settingsDialog) {
             settingsDialog.style.display = 'block';
         }
+    }
+
+    /**
+     * Open the Style Source toast, which lives apart from the Settings toast.
+     *
+     * The three sources are fetched on every open so the form shows what is stored
+     * rather than what the page was booted with.
+     */
+    async function openStyleSourcesDialog() {
+        closeAllDialogs();
+        if (dialogOverlay) dialogOverlay.style.display = 'block';
+        if (styleSourcesDialogEl) {
+            styleSourcesDialogEl.style.display = 'block';
+        }
+        await loadStyleSources();
+    }
+
+    /**
+     * Loads the caller's custom front-end sources into the settings form.
+     *
+     * The server also reports the bundled defaults, so the hint can show what an
+     * empty field will resolve to without hardcoding those paths here.
+     */
+    async function loadStyleSources() {
+        if (!styleSourceHtmlEl || !styleSourceCssEl || !styleSourceJsEl) return;
+        if (!window.OxypeCore) return;
+
+        try {
+            const auth = window.OxypeCore.getStoredAuth();
+            const data = await window.OxypeCore.getStyleSources(
+                auth ? auth.userId : null,
+                auth ? auth.token : null
+            ) || {};
+
+            styleSourceHtmlEl.value = data.chatHtmlSource || '';
+            styleSourceCssEl.value = data.chatCssSource || '';
+            styleSourceJsEl.value = data.chatJsSource || '';
+
+            styleSourceDefaults = {
+                html: data.defaultChatHtmlSource || '/chat.html',
+                css: data.defaultChatCssSource || '/chat.css',
+                js: data.defaultChatJsSource || '/chat.js'
+            };
+            if (typeof data.maxLength === 'number' && data.maxLength > 0) {
+                styleSourceMaxLength = data.maxLength;
+            }
+
+            renderStyleSourcesHint();
+        } catch (err) {
+            console.warn('[Chat] Failed to load style sources:', err.message);
+            if (styleSourcesHintEl) {
+                styleSourcesHintEl.textContent = '';
+            }
+        }
+    }
+
+    /**
+     * Shows what each empty field will fall back to.
+     *
+     * The defaults come from the server rather than being hardcoded here, so the two
+     * cannot drift apart.
+     */
+    function renderStyleSourcesHint() {
+        if (!styleSourcesHintEl) return;
+        styleSourcesHintEl.textContent = '';
+
+        const explanation = document.createElement('span');
+        explanation.textContent = getI18nText(
+            'chat.styleSourcesHint',
+            'Point the interface at your own chat.html, chat.css or chat.js. Leave a field empty to use the built-in file. Each address must start with https:// and be at most {max} characters.',
+            { max: styleSourceMaxLength }
+        );
+        styleSourcesHintEl.appendChild(explanation);
+
+        const defaults = document.createElement('span');
+        defaults.className = 'style-sources-defaults';
+        defaults.textContent = getI18nText(
+            'chat.styleSourcesDefaults',
+            'Built-in: {html} · {css} · {js}',
+            {
+                html: styleSourceDefaults.html,
+                css: styleSourceDefaults.css,
+                js: styleSourceDefaults.js
+            }
+        );
+        styleSourcesHintEl.appendChild(defaults);
+    }
+
+    /**
+     * Validates one source input.
+     *
+     * Mirrors the server rule so an obviously bad value is caught without a round
+     * trip: empty (use the bundled file), an absolute https URL, or a path on this
+     * same origin.
+     *
+     * @returns {string|null} An error message, or null when the value is acceptable
+     */
+    function validateStyleSource(value) {
+        const trimmed = String(value || '').trim();
+        if (!trimmed) {
+            // Empty means "use the bundled default" and is always allowed.
+            return null;
+        }
+        if (trimmed.length > styleSourceMaxLength) {
+            return getI18nText('chat.styleSourceTooLong', `Each address must be at most ${styleSourceMaxLength} characters.`, { max: styleSourceMaxLength });
+        }
+        if (trimmed.toLowerCase().indexOf('https://') === 0) {
+            // Reject a bare scheme, which points at no page at all.
+            if (trimmed.length <= 'https://'.length) {
+                return getI18nText('chat.styleSourceInvalidScheme', 'Each address must start with https://, or be a path on this site, or be left empty.');
+            }
+            return null;
+        }
+        if (isSameOriginPath(trimmed)) {
+            return null;
+        }
+        return getI18nText('chat.styleSourceInvalidScheme', 'Each address must start with https://, or be a path on this site, or be left empty.');
+    }
+
+    /**
+     * Reports whether a value is a safe path on this same origin.
+     *
+     * Kept in step with the server-side check: a protocol-relative `//host`, any
+     * other scheme, and `..` are all refused because they resolve off-origin.
+     *
+     * @param {string} value
+     * @returns {boolean}
+     */
+    function isSameOriginPath(value) {
+        const trimmed = String(value || '').trim();
+        if (!trimmed) return false;
+        if (trimmed.indexOf('//') === 0) return false;
+        if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(trimmed)) return false;
+        if (trimmed.indexOf('..') !== -1) return false;
+        return /^[A-Za-z0-9._~/%?=&+-]+$/.test(trimmed);
+    }
+
+    /**
+     * Validates the three sources and, when they are acceptable, asks the user to
+     * acknowledge the risk before anything is written.
+     *
+     * Nothing is saved here: the validated values are held in `pendingStyleSources`
+     * until the user confirms in the warning dialog.
+     */
+    function handleSaveStyleSources() {
+        if (!window.OxypeCore) return;
+
+        const html = styleSourceHtmlEl ? styleSourceHtmlEl.value.trim() : '';
+        const css = styleSourceCssEl ? styleSourceCssEl.value.trim() : '';
+        const js = styleSourceJsEl ? styleSourceJsEl.value.trim() : '';
+
+        for (const value of [html, css, js]) {
+            const problem = validateStyleSource(value);
+            if (problem) {
+                if (window.OxypeStyle) {
+                    window.OxypeStyle.showToast(problem, 'error');
+                }
+                return;
+            }
+        }
+
+        // Clearing every field means "go back to the bundled files", which introduces
+        // no third-party code at all, so no warning is warranted for that case.
+        if (!html && !css && !js) {
+            persistStyleSources({ html: '', css: '', js: '' });
+            return;
+        }
+
+        openStyleSourcesRiskDialog({ html: html, css: css, js: js });
+    }
+
+    /**
+     * Builds the security warning dialog and appends it to the document.
+     *
+     * Constructed in script rather than declared in chat.html on purpose. A
+     * user-supplied chat.html is exactly the case this warning exists for, and such a
+     * page will not carry markup added to our own file -- a declared dialog would be
+     * missing there and the save would silently do nothing. Building it guarantees the
+     * warning appears whichever page performed the save.
+     *
+     * Only built once; the built nodes are cached in the module-level references.
+     */
+    function buildStyleSourcesRiskDialog() {
+        if (styleSourcesRiskDialogEl) return styleSourcesRiskDialogEl;
+
+        const dialog = document.createElement('div');
+        dialog.id = 'styleSourcesRiskDialog';
+        dialog.className = 'interactive-dialog';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-labelledby', 'dialogStyleSourcesRiskTitle');
+        dialog.style.display = 'none';
+
+        // A scrim of our own rather than the page's #dialogOverlay, for the same reason
+        // as the inline styles below: this warning must be self-contained so it cannot
+        // be left invisible or non-modal by a stylesheet or page we do not control.
+        const scrim = document.createElement('div');
+        scrim.id = 'styleSourcesRiskScrim';
+        scrim.style.display = 'none';
+        scrim.style.position = 'fixed';
+        scrim.style.inset = '0';
+        scrim.style.zIndex = '1000';
+        scrim.style.backgroundColor = 'rgba(0, 0, 0, 0.45)';
+
+        // The positioning and legibility below are set inline on purpose. `.interactive-dialog`
+        // is defined in the overridable chat.css, not in the never-overridable style.css,
+        // so on a page carrying a custom stylesheet that omits it the dialog would fall
+        // into normal document flow at the end of the body -- off-screen, which would
+        // turn the "user must confirm" step into a silent no-op. Inline styles cannot be
+        // lost that way, guaranteeing the warning stays visible and usable.
+        dialog.style.position = 'fixed';
+        dialog.style.top = '50%';
+        dialog.style.left = '50%';
+        dialog.style.transform = 'translate(-50%, -50%)';
+        dialog.style.zIndex = '1001';
+        dialog.style.boxSizing = 'border-box';
+        dialog.style.width = 'min(440px, calc(100vw - 32px))';
+        dialog.style.maxHeight = '86vh';
+        dialog.style.overflowY = 'auto';
+        dialog.style.padding = '20px';
+        dialog.style.backgroundColor = 'var(--bg-surface, #ffffff)';
+        dialog.style.color = 'var(--text-primary, #1e293b)';
+        dialog.style.border = '1px solid var(--border-color, #e2e8f0)';
+        dialog.style.borderRadius = 'var(--radius-lg, 16px)';
+        dialog.style.boxShadow = 'var(--shadow-xl, 0 20px 25px -5px rgba(0, 0, 0, 0.1))';
+
+        // Caption bar, matching the other toasts
+        const header = document.createElement('header');
+        header.className = 'dialog-header';
+
+        const title = document.createElement('h3');
+        title.id = 'dialogStyleSourcesRiskTitle';
+        title.className = 'dialog-title';
+        title.textContent = getI18nText('chat.styleSourcesRiskTitle', 'Security Warning');
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'dialog-close-btn';
+        closeBtn.id = 'closeStyleSourcesRiskBtn';
+        closeBtn.setAttribute('aria-label', getI18nText('common.close', 'Close'));
+        // A plain glyph rather than the inline SVG: this dialog must render on a page
+        // whose markup and icon styling we do not control.
+        closeBtn.textContent = '\u00d7';
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+
+        const body = document.createElement('div');
+        body.className = 'dialog-body settings-dialog-body';
+
+        const intro = document.createElement('p');
+        intro.className = 'style-sources-risk-text';
+        intro.textContent = getI18nText(
+            'chat.styleSourcesRiskIntro',
+            'Only use style sources that you control or fully trust. The files you point to replace this interface and are loaded into your browser.'
+        );
+
+        const jsWarning = document.createElement('p');
+        jsWarning.className = 'style-sources-risk-text style-sources-risk-js';
+        jsWarning.textContent = getI18nText(
+            'chat.styleSourcesRiskJs',
+            'An embedded chat.js runs with your login credentials. If the source is untrusted, an attacker could use it to steal your account, read your conversations, or send messages as you.'
+        );
+
+        // The exact values being trusted. Filled in per save.
+        const list = document.createElement('ul');
+        list.className = 'style-sources-risk-list';
+        list.id = 'styleSourcesRiskList';
+
+        const ackLabel = document.createElement('label');
+        ackLabel.className = 'style-sources-risk-ack';
+        ackLabel.setAttribute('for', 'styleSourcesRiskCheckbox');
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = 'styleSourcesRiskCheckbox';
+
+        const ackText = document.createElement('span');
+        ackText.textContent = getI18nText(
+            'chat.styleSourcesRiskAck',
+            'I have verified that these sources are trustworthy, and I accept the risk.'
+        );
+
+        ackLabel.appendChild(checkbox);
+        ackLabel.appendChild(ackText);
+
+        const actions = document.createElement('div');
+        actions.className = 'dialog-actions';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.id = 'styleSourcesRiskCancelBtn';
+        cancelBtn.className = 'btn-secondary';
+        cancelBtn.textContent = getI18nText('common.cancel', 'Cancel');
+
+        const confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.id = 'styleSourcesRiskConfirmBtn';
+        confirmBtn.className = 'btn-danger';
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = getI18nText('chat.styleSourcesRiskConfirmBtn', 'Confirm and Save');
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(confirmBtn);
+
+        body.appendChild(intro);
+        body.appendChild(jsWarning);
+        body.appendChild(list);
+        body.appendChild(ackLabel);
+        body.appendChild(actions);
+
+        dialog.appendChild(header);
+        dialog.appendChild(body);
+        document.body.appendChild(scrim);
+        document.body.appendChild(dialog);
+
+        // Cache the nodes and bind their behaviour now, since the dialog bypasses the
+        // usual bindEvents() pass.
+        styleSourcesRiskDialogEl = dialog;
+        styleSourcesRiskScrimEl = scrim;
+        closeStyleSourcesRiskBtnEl = closeBtn;
+        styleSourcesRiskListEl = list;
+        styleSourcesRiskCheckboxEl = checkbox;
+        styleSourcesRiskCancelBtnEl = cancelBtn;
+        styleSourcesRiskConfirmBtnEl = confirmBtn;
+
+        closeBtn.addEventListener('click', closeStyleSourcesRiskDialog);
+        cancelBtn.addEventListener('click', closeStyleSourcesRiskDialog);
+        // Clicking the scrim cancels, matching the other dialogs' overlay behaviour.
+        scrim.addEventListener('click', closeStyleSourcesRiskDialog);
+        // The confirm button stays disabled until the box is ticked, so the warning
+        // cannot be dismissed by reflex.
+        checkbox.addEventListener('change', syncStyleSourcesRiskConfirmState);
+        confirmBtn.addEventListener('click', handleConfirmStyleSources);
+
+        // Keep the wording in step when the language changes while it is open.
+        window.addEventListener('oxype:languageChanged', () => {
+            title.textContent = getI18nText('chat.styleSourcesRiskTitle', 'Security Warning');
+            intro.textContent = getI18nText('chat.styleSourcesRiskIntro', intro.textContent);
+            jsWarning.textContent = getI18nText('chat.styleSourcesRiskJs', jsWarning.textContent);
+            ackText.textContent = getI18nText('chat.styleSourcesRiskAck', ackText.textContent);
+            cancelBtn.textContent = getI18nText('common.cancel', 'Cancel');
+            confirmBtn.textContent = getI18nText('chat.styleSourcesRiskConfirmBtn', 'Confirm and Save');
+            closeBtn.setAttribute('aria-label', getI18nText('common.close', 'Close'));
+        });
+
+        return dialog;
+    }
+
+    /**
+     * Shows the security warning for the values about to be trusted.
+     *
+     * The style source form is hidden meanwhile so only one decision is on screen; it
+     * is restored if the user cancels, with the typed values untouched.
+     *
+     * @param {{html: string, css: string, js: string}} sources - Already-validated values
+     */
+    function openStyleSourcesRiskDialog(sources) {
+        pendingStyleSources = sources;
+
+        // Built lazily so the markup exists even on a page we did not author.
+        buildStyleSourcesRiskDialog();
+
+        if (styleSourcesDialogEl) styleSourcesDialogEl.style.display = 'none';
+        if (styleSourcesRiskScrimEl) styleSourcesRiskScrimEl.style.display = 'block';
+        if (dialogOverlay) dialogOverlay.style.display = 'none';
+
+        renderStyleSourcesRiskList(sources);
+
+        // A fresh acknowledgement is required for every save, so that accepting the
+        // risk once cannot silently carry over to a later, different source.
+        if (styleSourcesRiskCheckboxEl) styleSourcesRiskCheckboxEl.checked = false;
+        syncStyleSourcesRiskConfirmState();
+
+        if (styleSourcesRiskDialogEl) {
+            styleSourcesRiskDialogEl.style.display = 'block';
+            // Focus the safest control rather than the destructive one.
+            if (styleSourcesRiskCancelBtnEl) {
+                setTimeout(() => styleSourcesRiskCancelBtnEl.focus(), 50);
+            }
+        }
+    }
+
+    /**
+     * Lists the exact values being trusted, so the user sees the real targets rather
+     * than a summary that could conceal one of them.
+     *
+     * @param {{html: string, css: string, js: string}} sources
+     */
+    function renderStyleSourcesRiskList(sources) {
+        if (!styleSourcesRiskListEl) return;
+        styleSourcesRiskListEl.textContent = '';
+
+        const entries = [
+            { label: 'chat.html', value: sources.html, key: 'html' },
+            { label: 'chat.css', value: sources.css, key: 'css' },
+            { label: 'chat.js', value: sources.js, key: 'js' }
+        ];
+
+        for (const entry of entries) {
+            if (!entry.value) continue;
+
+            const item = document.createElement('li');
+
+            const field = document.createElement('span');
+            field.className = 'style-sources-risk-field';
+            field.textContent = entry.label;
+
+            const value = document.createElement('span');
+            value.className = 'style-sources-risk-value';
+            // textContent, not innerHTML: the value is user input and must never be
+            // parsed as markup inside our own trusted dialog.
+            value.textContent = entry.value;
+
+            item.appendChild(field);
+            item.appendChild(value);
+            styleSourcesRiskListEl.appendChild(item);
+        }
+    }
+
+    /** Keeps the confirm button disabled until the risk has been acknowledged. */
+    function syncStyleSourcesRiskConfirmState() {
+        if (!styleSourcesRiskConfirmBtnEl) return;
+        const acknowledged = !!(styleSourcesRiskCheckboxEl && styleSourcesRiskCheckboxEl.checked);
+        styleSourcesRiskConfirmBtnEl.disabled = !acknowledged;
+
+        // Applied inline as well as in chat.css: the disabled look is the main signal
+        // that the checkbox must be ticked, and a custom stylesheet may not define the
+        // rule that dims it.
+        styleSourcesRiskConfirmBtnEl.style.opacity = acknowledged ? '' : '0.55';
+        styleSourcesRiskConfirmBtnEl.style.cursor = acknowledged ? '' : 'not-allowed';
+    }
+
+    /**
+     * Dismisses the warning without saving and returns to the form, whose contents
+     * were never touched, so the user can correct a value instead of retyping it.
+     */
+    function closeStyleSourcesRiskDialog() {
+        if (styleSourcesRiskDialogEl) styleSourcesRiskDialogEl.style.display = 'none';
+        if (styleSourcesRiskScrimEl) styleSourcesRiskScrimEl.style.display = 'none';
+        if (styleSourcesRiskCheckboxEl) styleSourcesRiskCheckboxEl.checked = false;
+        syncStyleSourcesRiskConfirmState();
+
+        const hadPending = !!pendingStyleSources;
+        pendingStyleSources = null;
+
+        // Only restore the form if the warning was reached from it. Closing via the
+        // overlay from somewhere else must not pop the form open.
+        if (hadPending && styleSourcesDialogEl) {
+            styleSourcesDialogEl.style.display = 'block';
+            if (dialogOverlay) dialogOverlay.style.display = 'block';
+        }
+    }
+
+    /** Saves the acknowledged sources, then reloads so they take effect. */
+    async function handleConfirmStyleSources() {
+        // Guard as well as disable: a disabled attribute is a UI affordance, not a
+        // security boundary, so the state is re-checked before acting on it.
+        if (!styleSourcesRiskCheckboxEl || !styleSourcesRiskCheckboxEl.checked) return;
+        if (!pendingStyleSources) return;
+
+        const sources = pendingStyleSources;
+        pendingStyleSources = null;
+
+        if (styleSourcesRiskDialogEl) styleSourcesRiskDialogEl.style.display = 'none';
+        if (styleSourcesRiskScrimEl) styleSourcesRiskScrimEl.style.display = 'none';
+        await persistStyleSources(sources);
+    }
+
+    /**
+     * Validates and saves the three style sources, then reloads so they apply.
+     *
+     * @param {{html: string, css: string, js: string}} sources - Already-validated values
+     */
+    async function persistStyleSources(sources) {
+        if (!window.OxypeCore) return;
+
+        const auth = window.OxypeCore.getStoredAuth();
+
+        if (styleSourcesSaveBtnEl) styleSourcesSaveBtnEl.disabled = true;
+        if (styleSourcesRiskConfirmBtnEl) styleSourcesRiskConfirmBtnEl.disabled = true;
+        try {
+            await window.OxypeCore.updateStyleSources(
+                {
+                    chatHtmlSource: sources.html,
+                    chatCssSource: sources.css,
+                    chatJsSource: sources.js
+                },
+                auth ? auth.userId : null,
+                auth ? auth.token : null
+            );
+
+            if (window.OxypeStyle) {
+                window.OxypeStyle.showToast(getI18nText('chat.styleSourcesSaved', 'Style sources updated.'), 'success');
+            }
+
+            // A reload is the only way the new sources can take effect, since the
+            // page's stylesheet and script were chosen during bootstrap.
+            setTimeout(() => window.location.reload(), 700);
+        } catch (err) {
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            if (window.OxypeStyle) {
+                window.OxypeStyle.showToast(
+                    getI18nText('chat.styleSourcesSaveFailed', `Failed to save: ${reason}`, { reason: reason }),
+                    'error'
+                );
+            }
+            // The save failed, so the acknowledged values are no longer pending.
+            // Re-arm the checkbox rather than leaving a stale acknowledgement around.
+            if (styleSourcesRiskCheckboxEl) styleSourcesRiskCheckboxEl.checked = false;
+        } finally {
+            if (styleSourcesSaveBtnEl) styleSourcesSaveBtnEl.disabled = false;
+            syncStyleSourcesRiskConfirmState();
+        }
+    }
+
+    /** Clears all three inputs locally; saving then stores the defaults. */
+    function handleResetStyleSources() {
+        if (styleSourceHtmlEl) styleSourceHtmlEl.value = '';
+        if (styleSourceCssEl) styleSourceCssEl.value = '';
+        if (styleSourceJsEl) styleSourceJsEl.value = '';
+        renderStyleSourcesHint();
     }
 
     /**
@@ -388,6 +974,15 @@
         if (membersDialog) membersDialog.style.display = 'none';
         if (manageDialog) manageDialog.style.display = 'none';
         if (settingsDialog) settingsDialog.style.display = 'none';
+        if (styleSourcesDialogEl) styleSourcesDialogEl.style.display = 'none';
+        if (styleSourcesRiskDialogEl) styleSourcesRiskDialogEl.style.display = 'none';
+        if (styleSourcesRiskScrimEl) styleSourcesRiskScrimEl.style.display = 'none';
+
+        // Escape or an overlay click abandons a pending acknowledgement, so the
+        // confirmed values must not survive to be saved by a later click.
+        pendingStyleSources = null;
+        if (styleSourcesRiskCheckboxEl) styleSourcesRiskCheckboxEl.checked = false;
+        syncStyleSourcesRiskConfirmState();
     }
 
     /**

@@ -441,6 +441,55 @@
         }
 
         /**
+         * Read the caller's custom front-end sources
+         * GET /getStyleSources/{userid}?userid=..&token=..
+         *
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @returns {Promise<{chatHtmlSource: string, chatCssSource: string, chatJsSource: string, defaultChatHtmlSource: string, defaultChatCssSource: string, defaultChatJsSource: string, maxLength: number}|null>}
+         */
+        async getStyleSources(userId = null, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            if (currentUserId === null || currentUserId === undefined) {
+                throw new Error('User ID is required');
+            }
+
+            const endpoint = `/getStyleSources/${encodeURIComponent(currentUserId)}${this.authQuery(currentUserId, authToken)}`;
+            return await this.request(endpoint, { method: 'GET' });
+        }
+
+        /**
+         * Store the caller's custom front-end sources
+         * POST /updateStyleSources/{userid}
+         *
+         * An empty string clears that override so the bundled file is used again.
+         *
+         * @param {{chatHtmlSource?: string, chatCssSource?: string, chatJsSource?: string}} sources
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         */
+        async updateStyleSources(sources = {}, userId = null, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            if (currentUserId === null || currentUserId === undefined) {
+                throw new Error('User ID is required');
+            }
+
+            return await this.request(`/updateStyleSources/${encodeURIComponent(currentUserId)}`, {
+                method: 'POST',
+                body: this.authBody(currentUserId, token, {
+                    chatHtmlSource: sources.chatHtmlSource || '',
+                    chatCssSource: sources.chatCssSource || '',
+                    chatJsSource: sources.chatJsSource || ''
+                })
+            });
+        }
+
+        /**
          * Fetch the latest message of a session
          * GET /lastMessage/{sessionId}?userid=..&token=..
          *
