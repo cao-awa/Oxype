@@ -156,8 +156,9 @@ body {
 }
 
 .classic-brand-mark {
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 26px;
     height: 26px;
     flex-shrink: 0;
@@ -170,6 +171,16 @@ body {
     font-size: 15px;
     font-weight: 700;
     line-height: 1;
+}
+
+/* The chemical formula O2: the 2 sits at the subscript position, low and small. */
+.classic-brand-sub {
+    font-size: 0.62em;
+    font-weight: 700;
+    line-height: 1;
+    position: relative;
+    top: 3px;
+    margin-left: 1px;
 }
 
 .classic-brand-text {
@@ -1210,6 +1221,11 @@ body {
     margin-top: 9px;
 }
 
+/* The generator sits under the list inside the owner-only invite block. */
+.classic-invite-actions {
+    margin-top: 9px;
+}
+
 .invite-empty {
     font-size: 12px;
     color: var(--cl-text-faint);
@@ -1239,7 +1255,8 @@ body {
 
 .invite-copy-btn,
 .invite-revoke-btn,
-.member-remove-btn {
+.member-remove-btn,
+.member-manage-btn {
     flex-shrink: 0;
     padding: 3px 8px;
     border: 1px solid;
@@ -1255,13 +1272,15 @@ body {
 
 .invite-copy-btn:hover,
 .invite-revoke-btn:hover,
-.member-remove-btn:hover {
+.member-remove-btn:hover,
+.member-manage-btn:hover {
     background-color: var(--cl-face-hover);
 }
 
 .invite-copy-btn:active,
 .invite-revoke-btn:active,
-.member-remove-btn:active {
+.member-remove-btn:active,
+.member-manage-btn:active {
     border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
 }
 

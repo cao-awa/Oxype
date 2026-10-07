@@ -123,6 +123,22 @@ object OxypeHttpServer {
         return null
     }
 
+    /**
+     * Reads a boolean flag, accepting the string spelling as well as a real boolean.
+     *
+     * `getBoolean` returns null for a value that is not a JSON boolean, and the client
+     * has historically serialised other flags as strings, so accepting "true"/"false"
+     * keeps a quoted flag from surfacing as a confusing "missing parameter".
+     */
+    private fun JSONObject.booleanValue(name: String): Boolean? {
+        getBoolean(name)?.let { return it }
+        return when (getString(name)?.trim()?.lowercase()) {
+            "true" -> true
+            "false" -> false
+            else -> null
+        }
+    }
+
     fun <T> KalmiaHttpContext.requireJoinedSession(
         json: JSONObject,
         sessionId: Long,
@@ -150,6 +166,19 @@ object OxypeHttpServer {
     }
 
     fun KalmiaHttpContext.assertLong(value: Long?, name: String): Long {
+        if (value == null) {
+            abortWith(
+                MissingParameterException("Missing parameter '$name'"),
+                HttpResponseStatus.BAD_REQUEST,
+                this
+            )
+            // abortWith always throws; this line only satisfies the type checker.
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
+        return value
+    }
+
+    fun KalmiaHttpContext.assertBoolean(value: Boolean?, name: String): Boolean {
         if (value == null) {
             abortWith(
                 MissingParameterException("Missing parameter '$name'"),
@@ -983,6 +1012,56 @@ object OxypeHttpServer {
                 }
             }
 
+            /**
+             * Grants or revokes administrator rights for a member (owner only).
+             *
+             * Promotion is the owner's prerogative alone: an admin can remove a peer
+             * from the session, but must not be able to create another admin, or the
+             * owner's authority could be diluted by a co-admin. The owner is never
+             * demoted here, because ownership is not an admin flag.
+             */
+            route("setSessionAdmin/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        val targetId = assertLong(
+                            json.longValue("targetUserid", "targetUserId"),
+                            "targetUserid"
+                        )
+                        val makeAdmin = assertBoolean(json.booleanValue("admin"), "admin")
+
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionOwner(session, user.id) {
+                                if (session.isOwner(targetId)) {
+                                    abortWith(
+                                        IllegalStateException("The session owner is always an admin"),
+                                        HttpResponseStatus.FORBIDDEN,
+                                        this
+                                    )
+                                }
+                                if (!session.hasMember(targetId)) {
+                                    abortWith(
+                                        IllegalArgumentException("That user is not a member of this session"),
+                                        HttpResponseStatus.BAD_REQUEST,
+                                        this
+                                    )
+                                }
+
+                                if (makeAdmin) {
+                                    session.addAdmin(targetId)
+                                } else {
+                                    session.removeAdmin(targetId)
+                                }
+                                SessionManager.saveSession(session)
+                                sessionView(session, user.id)
+                            }
+                        }
+                    }
+                }
+            }
+
             /** Leaves a session. Ownership transfers to the next member when possible. */
             route("leaveSession/{sessionId}") {
                 val sessionId by placeholder<Long>("sessionId")
@@ -1015,7 +1094,7 @@ object OxypeHttpServer {
                 }
             }
 
-            /** Lists the live invite UUIDs of a session (owner only). */
+            /** Lists the live invite UUIDs of a session (owner or admin). */
             route("getSessionInvites/{sessionId}") {
                 val sessionId by placeholder<Long>("sessionId")
                 post {
@@ -1023,7 +1102,7 @@ object OxypeHttpServer {
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
 
-                            requireSessionOwner(session, user.id) {
+                            requireSessionAdmin(session, user.id) {
                                 val uuids = SessionManager.getInviteUuids(sessionId, user.id)
                                 JSONObject {
                                     "uuids" set JSONArray { uuids.forEach { add(it) } }
@@ -1035,7 +1114,7 @@ object OxypeHttpServer {
                 }
             }
 
-            /** Generates a new invite UUID (owner only, capped per session). */
+            /** Generates a new invite UUID (owner or admin, capped per session). */
             route("createSessionInvite/{sessionId}") {
                 val sessionId by placeholder<Long>("sessionId")
                 post {
@@ -1043,7 +1122,7 @@ object OxypeHttpServer {
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
 
-                            requireSessionOwner(session, user.id) {
+                            requireSessionAdmin(session, user.id) {
                                 try {
                                     val uuid = SessionManager.createInviteUuid(sessionId, user.id)
                                     JSONObject {
@@ -1062,7 +1141,7 @@ object OxypeHttpServer {
                 }
             }
 
-            /** Revokes an invite UUID (owner only). */
+            /** Revokes an invite UUID (owner or admin). */
             route("revokeSessionInvite/{sessionId}") {
                 val sessionId by placeholder<Long>("sessionId")
                 post {
@@ -1072,7 +1151,7 @@ object OxypeHttpServer {
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
 
-                            requireSessionOwner(session, user.id) {
+                            requireSessionAdmin(session, user.id) {
                                 val removed = SessionManager.revokeInviteUuid(sessionId, user.id, uuid)
                                 JSONObject {
                                     "revoked" set removed

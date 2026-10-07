@@ -981,15 +981,24 @@
     color: var(--text-muted);
 }
 
-.member-remove-btn {
+.member-remove-btn,
+.member-manage-btn {
     padding: 4px 10px;
     font-size: 0.75rem;
     border: none;
     border-radius: var(--radius-sm);
     background-color: transparent;
-    color: var(--danger-color, #e5484d);
+    color: var(--primary-color);
     cursor: pointer;
     flex-shrink: 0;
+}
+
+.member-remove-btn {
+    color: var(--danger-color, #e5484d);
+}
+
+.member-manage-btn:hover {
+    background-color: var(--bg-surface-active);
 }
 
 .member-remove-btn:hover {

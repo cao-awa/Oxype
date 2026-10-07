@@ -7,7 +7,11 @@ object OxypeWebSocketServer {
     @JvmStatic
     fun start() {
         KalmiaWebSocketService.start(websocket {
+            route("/initalize") {
+                onMessage {
 
+                }
+            }
         })
     }
 }

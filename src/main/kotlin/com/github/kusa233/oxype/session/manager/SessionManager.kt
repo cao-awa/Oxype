@@ -123,16 +123,16 @@ object SessionManager {
         return inviteList
     }
 
-    fun getInviteUuids(sessionId: Long, ownerId: Long): List<String> {
+    fun getInviteUuids(sessionId: Long, callerId: Long): List<String> {
         val session = getSession(sessionId) ?: throw IllegalArgumentException("Session not found")
-        requireOwner(session, ownerId)
+        requireAdmin(session, callerId)
         return getInviteList(sessionId).uuids.map { normalizeInviteUuid(it) }.distinct()
     }
 
     /** Generates a fresh invite UUID, enforcing the per-session cap. */
-    fun createInviteUuid(sessionId: Long, ownerId: Long): String {
+    fun createInviteUuid(sessionId: Long, callerId: Long): String {
         val session = getSession(sessionId) ?: throw IllegalArgumentException("Session not found")
-        requireOwner(session, ownerId)
+        requireAdmin(session, callerId)
 
         val inviteList = getInviteList(sessionId)
         if (inviteList.uuids.size >= MAX_INVITE_UUIDS) {
@@ -147,9 +147,9 @@ object SessionManager {
         return cleanUuid
     }
 
-    fun revokeInviteUuid(sessionId: Long, ownerId: Long, uuid: String): Boolean {
+    fun revokeInviteUuid(sessionId: Long, callerId: Long, uuid: String): Boolean {
         val session = getSession(sessionId) ?: throw IllegalArgumentException("Session not found")
-        requireOwner(session, ownerId)
+        requireAdmin(session, callerId)
 
         val inviteList = getInviteList(sessionId)
         val clean = normalizeInviteUuid(uuid)
@@ -186,9 +186,9 @@ object SessionManager {
         return session
     }
 
-    private fun requireOwner(session: Session, ownerId: Long) {
-        if (!session.isOwner(ownerId)) {
-            throw IllegalStateException("Only the session owner can manage invite UUIDs")
+    private fun requireAdmin(session: Session, callerId: Long) {
+        if (!session.isAdmin(callerId)) {
+            throw IllegalStateException("Only the session owner or an administrator can manage invite UUIDs")
         }
     }
 }

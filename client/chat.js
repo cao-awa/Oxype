@@ -65,6 +65,16 @@
     let manageDialog;
     let closeManageBtnEl;
     let openManageBtnEl;
+    // Per-member management toast, reached through the "Manage" button on a member row
+    let memberManageDialog;
+    let closeMemberManageBtnEl;
+    let mmMemberNameEl;
+    let mmMemberRoleEl;
+    let mmGrantAdminBtnEl;
+    let mmRevokeAdminBtnEl;
+    let mmRemoveBtnEl;
+    /** The member row the per-member toast is currently acting on, if any. */
+    let memberManageTarget = null;
 
     // Style source inputs (chat.html / chat.css / chat.js overrides) and their toast
     let styleSourcesDialogEl;
@@ -176,6 +186,15 @@
         manageDialog = document.getElementById('manageDialog');
         closeManageBtnEl = document.getElementById('closeManageBtn');
         openManageBtnEl = document.getElementById('openManageBtn');
+
+        // Per-member management toast
+        memberManageDialog = document.getElementById('memberManageDialog');
+        closeMemberManageBtnEl = document.getElementById('closeMemberManageBtn');
+        mmMemberNameEl = document.getElementById('mmMemberName');
+        mmMemberRoleEl = document.getElementById('mmMemberRole');
+        mmGrantAdminBtnEl = document.getElementById('mmGrantAdminBtn');
+        mmRevokeAdminBtnEl = document.getElementById('mmRevokeAdminBtn');
+        mmRemoveBtnEl = document.getElementById('mmRemoveBtn');
 
         // Settings references
         settingsBtn = document.getElementById('settingsBtn');
@@ -342,6 +361,25 @@
 
         if (closeManageBtnEl) {
             closeManageBtnEl.addEventListener('click', closeAllDialogs);
+        }
+
+        // Per-member management toast
+        if (closeMemberManageBtnEl) {
+            closeMemberManageBtnEl.addEventListener('click', closeAllDialogs);
+        }
+        if (mmGrantAdminBtnEl) {
+            mmGrantAdminBtnEl.addEventListener('click', () => handleSetMemberAdmin(true));
+        }
+        if (mmRevokeAdminBtnEl) {
+            mmRevokeAdminBtnEl.addEventListener('click', () => handleSetMemberAdmin(false));
+        }
+        if (mmRemoveBtnEl) {
+            mmRemoveBtnEl.addEventListener('click', () => {
+                const target = memberManageTarget;
+                if (target == null) return;
+                closeAllDialogs();
+                handleRemoveMember(target);
+            });
         }
 
         // Settings dialog events
@@ -1004,6 +1042,10 @@
         if (sessionSettingsDialog) sessionSettingsDialog.style.display = 'none';
         if (membersDialog) membersDialog.style.display = 'none';
         if (manageDialog) manageDialog.style.display = 'none';
+        if (memberManageDialog) memberManageDialog.style.display = 'none';
+        // Closing abandons the pending per-member action, so a stale target can never
+        // be acted on by a later click.
+        memberManageTarget = null;
         if (settingsDialog) settingsDialog.style.display = 'none';
         if (styleSourcesDialogEl) styleSourcesDialogEl.style.display = 'none';
         if (styleSourcesRiskDialogEl) styleSourcesRiskDialogEl.style.display = 'none';
@@ -1205,8 +1247,8 @@
 
         // Management lives in its own toast, reachable through this entry button.
         if (openManageBtnEl) openManageBtnEl.style.display = (isOwner || isAdmin) ? 'inline-flex' : 'none';
-        // Invite UUID management is owner-only.
-        if (ssInviteSectionEl) ssInviteSectionEl.style.display = isOwner ? 'block' : 'none';
+        // Invite UUID management is owner or admin only.
+        if (ssInviteSectionEl) ssInviteSectionEl.style.display = (isOwner || isAdmin) ? 'block' : 'none';
 
         if (ssNameInputEl) ssNameInputEl.value = info.sessionName || '';
         if (ssDescInputEl) ssDescInputEl.value = info.description || '';
@@ -1267,15 +1309,15 @@
                 </div>
             `;
 
-            // Owner and admins may remove members, but never the owner, and only the
-            // owner may remove a peer admin. This mirrors the server-side rules.
-            const canRemove = (isOwner || isAdmin) && !memberIsOwner && !isSelf && (isOwner || !memberIsAdmin);
-            if (canRemove) {
+            // Owner and admins may manage members, but non-admin users cannot.
+            // Owner can manage anyone except themselves; admin can only manage non-owner, non-admin members.
+            const canManage = (isOwner && !isSelf) || (isAdmin && !memberIsOwner && !memberIsAdmin && !isSelf);
+            if (canManage) {
                 const btn = document.createElement('button');
                 btn.type = 'button';
-                btn.className = 'member-remove-btn';
-                btn.textContent = getI18nText('chat.removeMemberBtn', 'Remove');
-                btn.addEventListener('click', () => handleRemoveMember(u.userid));
+                btn.className = 'member-manage-btn';
+                btn.textContent = getI18nText('chat.manageMemberBtn', 'Manage');
+                btn.addEventListener('click', () => openMemberManageDialog(u, { isOwner, isAdmin, memberIsOwner, memberIsAdmin }));
                 row.appendChild(btn);
             }
 
@@ -1283,12 +1325,92 @@
         });
     }
 
-    /** Renders the invite UUID list (owner only). */
+    /**
+     * Opens the per-member management toast.
+     * Owner can grant/revoke admin rights or remove; admin can only remove ("admin只能移除").
+     */
+    function openMemberManageDialog(targetUser, perms) {
+        if (!targetUser) return;
+        closeAllDialogs();
+
+        memberManageTarget = {
+            user: targetUser,
+            perms: perms
+        };
+
+        const name = targetUser.username || `User #${targetUser.userid}`;
+        if (mmMemberNameEl) mmMemberNameEl.textContent = name;
+
+        let roleText = '';
+        if (perms.memberIsOwner) {
+            roleText = getI18nText('chat.memberOwner', 'Owner');
+        } else if (perms.memberIsAdmin) {
+            roleText = getI18nText('chat.memberAdmin', 'Admin');
+        }
+        if (mmMemberRoleEl) mmMemberRoleEl.textContent = roleText || '-';
+
+        // Owner can promote/demote admin; admin cannot promote/demote ("admin只能移除")
+        if (perms.isOwner && !perms.memberIsOwner) {
+            if (perms.memberIsAdmin) {
+                if (mmGrantAdminBtnEl) mmGrantAdminBtnEl.style.display = 'none';
+                if (mmRevokeAdminBtnEl) mmRevokeAdminBtnEl.style.display = 'inline-flex';
+            } else {
+                if (mmGrantAdminBtnEl) mmGrantAdminBtnEl.style.display = 'inline-flex';
+                if (mmRevokeAdminBtnEl) mmRevokeAdminBtnEl.style.display = 'none';
+            }
+        } else {
+            if (mmGrantAdminBtnEl) mmGrantAdminBtnEl.style.display = 'none';
+            if (mmRevokeAdminBtnEl) mmRevokeAdminBtnEl.style.display = 'none';
+        }
+
+        // Both owner and admin can remove (subject to permission rules)
+        const canRemove = perms.isOwner || (perms.isAdmin && !perms.memberIsAdmin && !perms.memberIsOwner);
+        if (mmRemoveBtnEl) mmRemoveBtnEl.style.display = canRemove ? 'inline-flex' : 'none';
+
+        if (dialogOverlay) dialogOverlay.style.display = 'block';
+        if (memberManageDialog) memberManageDialog.style.display = 'block';
+    }
+
+    /** Promotes or demotes a member to/from session administrator (owner only). */
+    async function handleSetMemberAdmin(makeAdmin) {
+        if (!memberManageTarget || !memberManageTarget.user) return;
+        const targetUserId = memberManageTarget.user.userid;
+        const confirmMsg = makeAdmin
+            ? getI18nText('chat.memberGrantAdminConfirm', 'Promote this member to administrator?')
+            : getI18nText('chat.memberRevokeAdminConfirm', 'Revoke administrator rights for this member?');
+
+        if (!window.confirm(confirmMsg)) return;
+
+        const auth = window.OxypeCore ? window.OxypeCore.getStoredAuth() : null;
+        const userId = currentUser ? currentUser.id : (auth ? auth.userId : null);
+
+        try {
+            await window.OxypeCore.setSessionAdmin(activeSessionId, targetUserId, makeAdmin, userId, auth ? auth.token : null);
+            closeAllDialogs();
+            if (window.OxypeStyle) {
+                window.OxypeStyle.showToast(makeAdmin
+                    ? getI18nText('chat.memberGrantAdminSuccess', 'Member promoted to administrator.')
+                    : getI18nText('chat.memberRevokeAdminSuccess', 'Administrator rights revoked.'),
+                    'success'
+                );
+            }
+            await loadSessionSettings();
+            await openMembersDialog();
+        } catch (err) {
+            console.error('[Chat] Set member admin failed:', err);
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            if (window.OxypeStyle) {
+                window.OxypeStyle.showToast(getI18nText('chat.updateFailed', `Failed to update: ${reason}`, { reason: reason }), 'error');
+            }
+        }
+    }
+
+    /** Renders the invite UUID list (owner or admin). */
     async function loadSessionInvites() {
         if (!ssInviteListEl) return;
 
         const info = activeSessionInfo || {};
-        if (!info.isOwner) {
+        if (!info.isOwner && !info.isAdmin) {
             ssInviteListEl.innerHTML = '';
             return;
         }

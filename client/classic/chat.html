@@ -22,7 +22,7 @@
         <!-- Left rail: brand, conversation list, account -->
         <aside class="classic-rail">
             <div class="classic-brand">
-                <span class="classic-brand-mark">O</span>
+                <span class="classic-brand-mark" aria-hidden="true">O<span class="classic-brand-sub">2</span></span>
                 <span class="classic-brand-text" data-i18n="chat.title">Oxype</span>
             </div>
 
@@ -151,16 +151,35 @@
         </header>
         <div class="dialog-body">
             <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.sessionNameField">Name</span>
+                <span class="classic-info-value" id="ssSessionName">--</span>
+            </div>
+            <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.sessionDescField">Description</span>
+                <span class="classic-info-value" id="ssSessionDesc">--</span>
+            </div>
+            <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.sessionOwnerField">Owner</span>
+                <span class="classic-info-value" id="ssSessionOwner">--</span>
+            </div>
+            <div class="classic-info-row">
                 <span class="classic-info-label" data-i18n="chat.sessionIdField">Conversation ID</span>
                 <span class="classic-info-value" id="ssSessionId">--</span>
             </div>
-            <div class="classic-info-row">
-                <span class="classic-info-label" data-i18n="chat.invitesTitle">Invite UUIDs</span>
-                <span class="classic-info-value" id="ssInviteHint"></span>
-            </div>
-            <div class="classic-chiplist" id="ssInviteList"></div>
+            <!-- Invite UUID management, owner or admin only. The whole block is wrapped so that
+                 a non-admin/non-owner sees neither the label row nor the list and the generator:
+                 hiding only the list still left the heading text on screen. -->
+            <section id="ssInviteSection" style="display: none;">
+                <div class="classic-info-row">
+                    <span class="classic-info-label" data-i18n="chat.invitesTitle">Invite UUIDs</span>
+                    <span class="classic-info-value" id="ssInviteHint"></span>
+                </div>
+                <div class="classic-chiplist" id="ssInviteList"></div>
+                <div class="classic-invite-actions">
+                    <button type="button" id="ssCreateInviteBtn" class="btn-secondary" data-i18n="chat.createInviteBtn">New Invite</button>
+                </div>
+            </section>
             <div class="dialog-actions">
-                <button type="button" id="ssCreateInviteBtn" class="btn-secondary" data-i18n="chat.createInviteBtn">New Invite</button>
                 <button type="button" id="openMembersBtn" class="btn-secondary" data-i18n="chat.membersTitle">Members</button>
                 <button type="button" id="ssLeaveBtn" class="btn-danger" data-i18n="chat.leaveSessionBtn">Leave Conversation</button>
             </div>
@@ -180,6 +199,34 @@
         </header>
         <div class="dialog-body">
             <div class="classic-memberlist" id="ssMemberList"></div>
+        </div>
+    </div>
+
+    <!-- Per-member management dialog (owner can set admin or remove; admin can only remove) -->
+    <div class="interactive-dialog classic-dialog" id="memberManageDialog" style="display: none;" role="dialog" aria-modal="true">
+        <header class="dialog-header">
+            <h3 class="dialog-title" data-i18n="chat.memberManageTitle">Manage Member</h3>
+            <button type="button" class="dialog-close-btn" id="closeMemberManageBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body">
+            <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.memberNameField">Member</span>
+                <span class="classic-info-value" id="mmMemberName">--</span>
+            </div>
+            <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.memberRoleField">Role</span>
+                <span class="classic-info-value" id="mmMemberRole">--</span>
+            </div>
+            <div class="dialog-actions">
+                <button type="button" id="mmGrantAdminBtn" class="btn-secondary" style="display: none;" data-i18n="chat.memberGrantAdminBtn">Make Admin</button>
+                <button type="button" id="mmRevokeAdminBtn" class="btn-secondary" style="display: none;" data-i18n="chat.memberRevokeAdminBtn">Revoke Admin</button>
+                <button type="button" id="mmRemoveBtn" class="btn-danger" style="display: none;" data-i18n="chat.memberRemoveBtn">Remove from Conversation</button>
+            </div>
         </div>
     </div>
 

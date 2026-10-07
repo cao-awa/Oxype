@@ -62,7 +62,11 @@
     let sessionSettingsBtnEl;
     let sessionSettingsDialogEl;
     let closeSessionSettingsBtnEl;
+    let ssSessionNameEl;
+    let ssSessionDescEl;
+    let ssSessionOwnerEl;
     let ssSessionIdEl;
+    let ssInviteSectionEl;
     let ssInviteHintEl;
     let ssInviteListEl;
     let ssCreateInviteBtnEl;
@@ -72,6 +76,17 @@
     let membersDialogEl;
     let closeMembersBtnEl;
     let ssMemberListEl;
+
+    // Per-member management toast, reached through the "Manage" button on a member row
+    let memberManageDialogEl;
+    let closeMemberManageBtnEl;
+    let mmMemberNameEl;
+    let mmMemberRoleEl;
+    let mmGrantAdminBtnEl;
+    let mmRevokeAdminBtnEl;
+    let mmRemoveBtnEl;
+    /** The member row the per-member toast is currently acting on, if any. */
+    let memberManageTarget = null;
 
     let settingsBtnEl;
     let settingsDialogEl;
@@ -330,7 +345,11 @@
         sessionSettingsBtnEl = document.getElementById('sessionSettingsBtn');
         sessionSettingsDialogEl = document.getElementById('sessionSettingsDialog');
         closeSessionSettingsBtnEl = document.getElementById('closeSessionSettingsBtn');
+        ssSessionNameEl = document.getElementById('ssSessionName');
+        ssSessionDescEl = document.getElementById('ssSessionDesc');
+        ssSessionOwnerEl = document.getElementById('ssSessionOwner');
         ssSessionIdEl = document.getElementById('ssSessionId');
+        ssInviteSectionEl = document.getElementById('ssInviteSection');
         ssInviteHintEl = document.getElementById('ssInviteHint');
         ssInviteListEl = document.getElementById('ssInviteList');
         ssCreateInviteBtnEl = document.getElementById('ssCreateInviteBtn');
@@ -340,6 +359,14 @@
         membersDialogEl = document.getElementById('membersDialog');
         closeMembersBtnEl = document.getElementById('closeMembersBtn');
         ssMemberListEl = document.getElementById('ssMemberList');
+
+        memberManageDialogEl = document.getElementById('memberManageDialog');
+        closeMemberManageBtnEl = document.getElementById('closeMemberManageBtn');
+        mmMemberNameEl = document.getElementById('mmMemberName');
+        mmMemberRoleEl = document.getElementById('mmMemberRole');
+        mmGrantAdminBtnEl = document.getElementById('mmGrantAdminBtn');
+        mmRevokeAdminBtnEl = document.getElementById('mmRevokeAdminBtn');
+        mmRemoveBtnEl = document.getElementById('mmRemoveBtn');
 
         settingsBtnEl = document.getElementById('settingsBtn');
         settingsDialogEl = document.getElementById('settingsDialog');
@@ -415,6 +442,20 @@
 
         if (closeMembersBtnEl) closeMembersBtnEl.addEventListener('click', closeAllDialogs);
 
+        // Per-member management toast
+        if (closeMemberManageBtnEl) closeMemberManageBtnEl.addEventListener('click', closeAllDialogs);
+        if (mmGrantAdminBtnEl) mmGrantAdminBtnEl.addEventListener('click', () => handleSetMemberAdmin(true));
+        if (mmRevokeAdminBtnEl) mmRevokeAdminBtnEl.addEventListener('click', () => handleSetMemberAdmin(false));
+        if (mmRemoveBtnEl) {
+            mmRemoveBtnEl.addEventListener('click', () => {
+                const target = memberManageTarget;
+                if (!target || !target.user) return;
+                const targetUserId = target.user.userid;
+                closeAllDialogs();
+                handleRemoveMember(targetUserId);
+            });
+        }
+
         if (settingsBtnEl) settingsBtnEl.addEventListener('click', openSettingsDialog);
         if (closeSettingsBtnEl) closeSettingsBtnEl.addEventListener('click', closeAllDialogs);
         if (dialogLogoutBtnEl) dialogLogoutBtnEl.addEventListener('click', handleLogout);
@@ -470,10 +511,15 @@
     /** Closes every dialog and the shared overlay. */
     function closeAllDialogs() {
         [dialogOverlayEl, sessionOptionsDialogEl, sessionSettingsDialogEl, membersDialogEl,
+            memberManageDialogEl,
             settingsDialogEl, styleSourcesDialogEl, styleSourcesRiskDialogEl,
             styleSourcesRiskScrimEl].forEach(el => {
             if (el) el.style.display = 'none';
         });
+
+        // Closing abandons the pending per-member action, so a stale target can never
+        // be acted on by a later click.
+        memberManageTarget = null;
 
         // Escape or an overlay click abandons a pending acknowledgement, so the
         // confirmed values must not survive to be saved by a later click.
@@ -1515,10 +1561,11 @@
     }
 
     /**
-     * Loads the active conversation's role and info, then its invite UUIDs.
+     * Loads the active conversation's info and role, paints the info rows, then
+     * resolves the invite UUIDs the caller is allowed to see.
      *
-     * The first screen stays deliberately thin -- id, invites, leave -- with the
-     * roster living in its own toast.
+     * The info rows (name, description, owner, id) are readable by every member,
+     * including plain members; the invite block is owner/admin only.
      */
     async function loadSessionSettings() {
         if (ssSessionIdEl) ssSessionIdEl.textContent = String(activeSessionId);
@@ -1535,20 +1582,43 @@
             return;
         }
 
+        renderSessionSettings();
         await loadSessionInvites();
     }
 
-    /** Renders the invite UUIDs, which only the owner may see or manage. */
+    /**
+     * Paints the conversation info rows from [activeSessionInfo].
+     *
+     * Every member may read these; no role check guards them, so a plain member sees
+     * the same details as an owner, just without any of the management controls.
+     */
+    function renderSessionSettings() {
+        const info = activeSessionInfo || {};
+
+        if (ssSessionNameEl) ssSessionNameEl.textContent = info.sessionName || '-';
+        if (ssSessionDescEl) {
+            ssSessionDescEl.textContent = info.description || getI18nText('chat.noDescription', 'No description');
+        }
+        if (ssSessionOwnerEl) ssSessionOwnerEl.textContent = info.owner ? `#${info.owner}` : '-';
+        if (ssSessionIdEl) ssSessionIdEl.textContent = String(activeSessionId);
+    }
+
+    /** Renders the invite UUIDs, which only the owner or an admin may see or manage. */
     async function loadSessionInvites() {
         if (!ssInviteListEl) return;
 
         const info = activeSessionInfo || {};
-        if (!info.isOwner) {
+        if (!info.isOwner && !info.isAdmin) {
+            // Hide the whole block, not just the list: the heading row and the
+            // generator button would otherwise stay on screen for a plain member,
+            // which is exactly the leak this guards against.
+            if (ssInviteSectionEl) ssInviteSectionEl.style.display = 'none';
             ssInviteListEl.innerHTML = '';
             if (ssCreateInviteBtnEl) ssCreateInviteBtnEl.style.display = 'none';
             if (ssInviteHintEl) ssInviteHintEl.textContent = '';
             return;
         }
+        if (ssInviteSectionEl) ssInviteSectionEl.style.display = 'block';
         if (ssCreateInviteBtnEl) ssCreateInviteBtnEl.style.display = 'inline-flex';
 
         const stored = auth();
@@ -1761,20 +1831,96 @@
                 </div>
             `;
 
-            // Mirrors the server rules: never the owner, never yourself, and only the
-            // owner may remove a peer administrator.
-            const canRemove = (isOwner || isAdmin) && !memberIsOwner && !isSelf && (isOwner || !memberIsAdmin);
-            if (canRemove) {
+            // Owner and admins may manage members, but non-admin users cannot.
+            // Owner can manage anyone except themselves; admin can only manage non-owner, non-admin members.
+            const canManage = (isOwner && !isSelf) || (isAdmin && !memberIsOwner && !memberIsAdmin && !isSelf);
+            if (canManage) {
                 const btn = document.createElement('button');
                 btn.type = 'button';
-                btn.className = 'member-remove-btn';
-                btn.textContent = getI18nText('chat.removeMemberBtn', 'Remove');
-                btn.addEventListener('click', () => handleRemoveMember(u.userid));
+                btn.className = 'member-manage-btn';
+                btn.textContent = getI18nText('chat.manageMemberBtn', 'Manage');
+                btn.addEventListener('click', () => openMemberManageDialog(u, { isOwner, isAdmin, memberIsOwner, memberIsAdmin }));
                 row.appendChild(btn);
             }
 
             ssMemberListEl.appendChild(row);
         });
+    }
+
+    /**
+     * Opens the per-member management dialog.
+     * Owner can grant/revoke admin rights or remove; admin can only remove ("admin只能移除").
+     */
+    function openMemberManageDialog(targetUser, perms) {
+        if (!targetUser) return;
+        closeAllDialogs();
+
+        memberManageTarget = {
+            user: targetUser,
+            perms: perms
+        };
+
+        const name = targetUser.username || `User #${targetUser.userid}`;
+        if (mmMemberNameEl) mmMemberNameEl.textContent = name;
+
+        let roleText = '';
+        if (perms.memberIsOwner) {
+            roleText = getI18nText('chat.memberOwner', 'Owner');
+        } else if (perms.memberIsAdmin) {
+            roleText = getI18nText('chat.memberAdmin', 'Admin');
+        }
+        if (mmMemberRoleEl) mmMemberRoleEl.textContent = roleText || '-';
+
+        // Owner can promote/demote admin; admin cannot promote/demote ("admin只能移除")
+        if (perms.isOwner && !perms.memberIsOwner) {
+            if (perms.memberIsAdmin) {
+                if (mmGrantAdminBtnEl) mmGrantAdminBtnEl.style.display = 'none';
+                if (mmRevokeAdminBtnEl) mmRevokeAdminBtnEl.style.display = 'inline-block';
+            } else {
+                if (mmGrantAdminBtnEl) mmGrantAdminBtnEl.style.display = 'inline-block';
+                if (mmRevokeAdminBtnEl) mmRevokeAdminBtnEl.style.display = 'none';
+            }
+        } else {
+            if (mmGrantAdminBtnEl) mmGrantAdminBtnEl.style.display = 'none';
+            if (mmRevokeAdminBtnEl) mmRevokeAdminBtnEl.style.display = 'none';
+        }
+
+        // Both owner and admin can remove (subject to permission rules)
+        const canRemove = perms.isOwner || (perms.isAdmin && !perms.memberIsAdmin && !perms.memberIsOwner);
+        if (mmRemoveBtnEl) mmRemoveBtnEl.style.display = canRemove ? 'inline-block' : 'none';
+
+        if (dialogOverlayEl) dialogOverlayEl.style.display = 'block';
+        if (memberManageDialogEl) memberManageDialogEl.style.display = 'block';
+    }
+
+    /** Promotes or demotes a member to/from session administrator (owner only). */
+    async function handleSetMemberAdmin(makeAdmin) {
+        if (!memberManageTarget || !memberManageTarget.user) return;
+        const targetUserId = memberManageTarget.user.userid;
+        const confirmMsg = makeAdmin
+            ? getI18nText('chat.memberGrantAdminConfirm', 'Promote this member to administrator?')
+            : getI18nText('chat.memberRevokeAdminConfirm', 'Revoke administrator rights for this member?');
+
+        if (!window.confirm(confirmMsg)) return;
+
+        const stored = auth();
+        const userId = currentUserId();
+
+        try {
+            await window.OxypeCore.setSessionAdmin(activeSessionId, targetUserId, makeAdmin, userId, stored ? stored.token : null);
+            closeAllDialogs();
+            toast(makeAdmin
+                ? getI18nText('chat.memberGrantAdminSuccess', 'Member promoted to administrator.')
+                : getI18nText('chat.memberRevokeAdminSuccess', 'Administrator rights revoked.'),
+                'success'
+            );
+            await loadSessionSettings();
+            await openMembersDialog();
+        } catch (err) {
+            console.error('[Classic] Set member admin failed:', err);
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            toast(getI18nText('chat.updateFailed', `Failed to update: ${reason}`, { reason: reason }), 'error');
+        }
     }
 
     /** Removes a member from the active conversation. */

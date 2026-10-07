@@ -21,9 +21,8 @@
             if (global.OXYPE_CONFIG && global.OXYPE_CONFIG.baseUrl) {
                 this.baseUrl = global.OXYPE_CONFIG.baseUrl;
             } else if (typeof window !== 'undefined' && window.location) {
-                const port = window.location.port;
-                // If page is served from 12345, use relative path (''); otherwise target default backend on 12345
-                this.baseUrl = (port === '12345') ? '' : 'http://127.0.0.1:12345';
+                // When served over http/https, use relative paths so any port or hostname works.
+                this.baseUrl = (window.location.protocol === 'http:' || window.location.protocol === 'https:') ? '' : 'http://127.0.0.1:12345';
             } else {
                 this.baseUrl = 'http://127.0.0.1:12345';
             }
@@ -569,6 +568,28 @@
             return await this.request(`/removeSessionMember/${encodeURIComponent(sessionId)}`, {
                 method: 'POST',
                 body: this.authBody(userId, token, { targetUserid: this.toNumericId(targetUserId) })
+            });
+        }
+
+        /**
+         * Grant or revoke admin rights for a member (owner only)
+         * POST /setSessionAdmin/{sessionId}
+         */
+        async setSessionAdmin(sessionId, targetUserId, admin, userId = null, token = null) {
+            if (!sessionId || !targetUserId) {
+                throw new Error('Session ID and target user ID are required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/setSessionAdmin/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token, {
+                    targetUserid: this.toNumericId(targetUserId),
+                    admin: Boolean(admin)
+                })
             });
         }
 
