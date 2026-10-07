@@ -356,3 +356,18 @@ input:focus, select:focus, textarea:focus {
     color: var(--text-primary);
     background-color: var(--bg-surface-hover);
 }
+
+/* Accessibility helper: keeps a label available to assistive technology without
+   giving it a place in the visual layout. Used by the composer format selector,
+   whose visible control is a <select> that already states its own purpose. */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}

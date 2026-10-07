@@ -6,6 +6,9 @@ data class MessageTextPiece(
     val text: String
 ) : MessagePiece() {
     companion object {
+        /** Value of the `type` field identifying this piece. */
+        const val TYPE: String = "text"
+
         fun decode(json: JSONObject): MessageTextPiece {
             return MessageTextPiece(json.getString("text") { "" })
         }
@@ -13,7 +16,7 @@ data class MessageTextPiece(
 
     override fun encode(): JSONObject {
         return JSONObject {
-            "type" set "text"
+            "type" set TYPE
             "text" set text
         }
     }

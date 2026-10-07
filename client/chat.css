@@ -419,6 +419,105 @@
     line-height: 1.2;
 }
 
+/* ------------------------------------------------------ markdown bodies -----
+   Rendered by /markdown.js. The rules deliberately inherit the bubble's colour and
+   use only relative sizing, so a markdown body reads correctly in an incoming bubble
+   and in the primary-coloured outgoing one without a second set of overrides. */
+
+.message-content-markdown > *:first-child {
+    margin-top: 0;
+}
+
+.message-content-markdown > *:last-child {
+    margin-bottom: 0;
+}
+
+.message-content-markdown .md-paragraph {
+    margin: 0 0 0.5em;
+}
+
+.message-content-markdown .md-heading {
+    margin: 0.6em 0 0.35em;
+    line-height: 1.25;
+    font-weight: 700;
+}
+
+.message-content-markdown .md-h1 { font-size: 1.35em; }
+.message-content-markdown .md-h2 { font-size: 1.2em; }
+.message-content-markdown .md-h3 { font-size: 1.08em; }
+.message-content-markdown .md-h4,
+.message-content-markdown .md-h5,
+.message-content-markdown .md-h6 { font-size: 1em; }
+
+.message-content-markdown .md-list {
+    margin: 0 0 0.5em;
+    padding-left: 1.35em;
+}
+
+.message-content-markdown .md-list-unordered { list-style: disc; }
+.message-content-markdown .md-list-ordered { list-style: decimal; }
+.message-content-markdown .md-list .md-list { margin-bottom: 0; }
+
+.message-content-markdown .md-list li {
+    margin: 0.1em 0;
+}
+
+.message-content-markdown .md-quote {
+    margin: 0 0 0.5em;
+    padding: 0.1em 0 0.1em 0.7em;
+    border-left: 3px solid currentColor;
+    opacity: 0.9;
+}
+
+.message-content-markdown .md-pre {
+    margin: 0 0 0.5em;
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    background-color: rgba(0, 0, 0, 0.16);
+    overflow-x: auto;
+}
+
+.message-content-markdown .md-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    white-space: pre;
+}
+
+.message-content-markdown .md-code-inline {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    background-color: rgba(0, 0, 0, 0.16);
+}
+
+.message-content-markdown .md-link {
+    color: inherit;
+    text-decoration: underline;
+}
+
+.message-content-markdown .md-img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius-md);
+    vertical-align: bottom;
+}
+
+.message-content-markdown .md-hr {
+    margin: 0.6em 0;
+    border: 0;
+    border-top: 1px solid currentColor;
+    opacity: 0.4;
+}
+
+.message-content-markdown .md-task {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.message-content-markdown .md-task-done {
+    opacity: 0.75;
+}
+
 .message-row.incoming .message-sender {
     color: var(--primary-color);
 }
@@ -469,7 +568,9 @@
     border-top: 1px solid var(--border-color);
     background-color: var(--bg-surface);
     display: flex;
-    align-items: center;
+    /* Bottom-aligned so the send button and format selector stay beside the last
+       line as the input grows, instead of drifting to its vertical centre. */
+    align-items: flex-end;
     gap: 12px;
 }
 
@@ -478,12 +579,48 @@
     padding: 12px 16px;
     font-size: 0.95rem;
     border-radius: var(--radius-full);
+    /* A textarea defaults to a monospace-ish content box and a fixed height; both are
+       reset so it sits exactly where the single-line input did. The height is then
+       driven by autoGrowComposer(). */
+    resize: none;
+    line-height: 1.45;
+    max-height: 200px;
+    overflow-y: hidden;
+    font-family: inherit;
+}
+
+/* Message format selector, at the left end of the composer row. */
+.composer-format {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+.composer-format-select {
+    padding: 8px 10px;
+    font-size: 0.8rem;
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+    background-color: var(--bg-surface-hover);
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+}
+
+.composer-format-select:hover {
+    color: var(--text-primary);
+}
+
+.composer-format-select:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
 }
 
 .btn-send {
     border-radius: var(--radius-full);
     padding: 10px 20px;
     font-size: 0.95rem;
+    /* Keeps the button on the composer's baseline when the input grows. */
+    flex: 0 0 auto;
 }
 
 /* Interactive Dialogs (Toast Popups) */

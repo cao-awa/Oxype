@@ -684,29 +684,38 @@
          * Send message to a session
          * POST /sendMessage/{sessionId}
          * Payload: { userid: 1, token: "...", pieces: [{ type: 'text', text: '...' }] }
-         * 
+         *
          * @param {number|string} sessionId - Target session ID
          * @param {string|Array<{type: string, text: string}>} content - Text content or pieces array
          * @param {number|string} [userId] - Optional explicit sender user ID
          * @param {string} [token] - Optional explicit auth token
+         * @param {'text'|'markdown'} [messageType='text'] - How the receiving client should
+         *        interpret a string [content]. Use 'markdown' to send Markdown source.
          * @returns {Promise<{seq: number}|any>}
          */
-        async sendMessage(sessionId, content, userId = null, token = null) {
+        async sendMessage(sessionId, content, userId = null, token = null, messageType = 'text') {
             if (!sessionId) {
                 throw new Error('Session ID is required to send message');
             }
 
             let pieces;
             if (Array.isArray(content)) {
+                // An explicit pieces array is forwarded verbatim: a caller that builds
+                // its own pieces has already decided each one's type.
                 pieces = content;
             } else if (typeof content === 'string') {
                 if (!content.trim()) {
                     throw new Error('Message content cannot be empty');
                 }
+                // The server only decodes piece types it has a codec for, so an
+                // unrecognised type is rejected here rather than sent and refused.
+                const type = messageType === 'markdown' ? 'markdown' : 'text';
                 pieces = [
                     {
-                        type: 'text',
-                        text: content.trim()
+                        type: type,
+                        // Deliberately not trimmed: leading whitespace makes a fenced
+                        // code block, and trailing whitespace is a Markdown line break.
+                        text: content
                     }
                 ];
             } else {

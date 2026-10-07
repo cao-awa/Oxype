@@ -7,13 +7,21 @@ abstract class MessagePiece {
         private val CODECS: MutableMap<String, (JSONObject) -> MessagePiece> = mutableMapOf()
 
         init {
-            registerCodec("text") {
+            registerCodec(MessageTextPiece.TYPE) {
                 MessageTextPiece.decode(it)
+            }
+            registerCodec(MessageMarkdownPiece.TYPE) {
+                MessageMarkdownPiece.decode(it)
             }
         }
 
         fun registerCodec(name: String, decoder: (JSONObject) -> MessagePiece) {
             CODECS[name] = decoder
+        }
+
+        /** Reports whether [type] names a piece this build knows how to decode. */
+        fun isKnownType(type: String?): Boolean {
+            return type != null && CODECS.containsKey(type)
         }
 
         fun decode(json: JSONObject): MessagePiece {

@@ -81,9 +81,18 @@
             <div class="messages-container classic-transcript" id="messagesContainer"></div>
 
             <form class="classic-composer" id="chatComposer">
-                <input type="text" id="messageInput" class="classic-input"
+                <!-- Body format for the next message, at the bottom-left of the chat pane -->
+                <label class="classic-format" for="messageFormatSelect"
+                       data-i18n-title="chat.formatLabel" title="Message format">
+                    <span class="visually-hidden" data-i18n="chat.formatLabel">Message format</span>
+                    <select id="messageFormatSelect" class="classic-format-select">
+                        <option value="text" data-i18n="chat.formatText">Plain text</option>
+                        <option value="markdown" data-i18n="chat.formatMarkdown">Markdown</option>
+                    </select>
+                </label>
+                <textarea id="messageInput" class="classic-input" rows="1"
                        data-i18n-placeholder="chat.inputPlaceholder"
-                       placeholder="Type a message..." autocomplete="off">
+                       placeholder="Type a message..." autocomplete="off"></textarea>
                 <button type="submit" id="sendMessageBtn" class="classic-btn classic-btn-primary"
                         data-i18n="chat.sendBtn">Send</button>
             </form>

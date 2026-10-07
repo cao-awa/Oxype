@@ -27,7 +27,10 @@
 
     /** Assets that are part of the application itself and cannot be overridden. */
     var BASE_STYLESHEET = '/style.css';
-    var BASE_SCRIPTS = ['/lang.js', '/style.js', '/core.js'];
+    // markdown.js is bundled rather than overridable: it is the renderer that has to
+    // stay safe against another user's message, so it must not be replaceable by a
+    // user-configured source. It loads before chat.js, which calls into it.
+    var BASE_SCRIPTS = ['/lang.js', '/style.js', '/core.js', '/markdown.js'];
 
     /** Mirrors the server-side limit so a stored value can never be used unchecked. */
     var MAX_LENGTH = 128;

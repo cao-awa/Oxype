@@ -89,9 +89,18 @@
 
             <!-- Message Input & Composer -->
             <footer class="chat-composer" id="chatComposer" style="display: none;">
-                <input type="text" id="messageInput" class="chat-input" 
+                <!-- Body format for the next message, at the bottom-left of the chat pane -->
+                <label class="composer-format" for="messageFormatSelect"
+                       data-i18n-title="chat.formatLabel" title="Message format">
+                    <span class="visually-hidden" data-i18n="chat.formatLabel">Message format</span>
+                    <select id="messageFormatSelect" class="composer-format-select">
+                        <option value="text" data-i18n="chat.formatText">Plain text</option>
+                        <option value="markdown" data-i18n="chat.formatMarkdown">Markdown</option>
+                    </select>
+                </label>
+                <textarea id="messageInput" class="chat-input" rows="1"
                        data-i18n-placeholder="chat.inputPlaceholder" 
-                       placeholder="Type a message..." autocomplete="off">
+                       placeholder="Type a message..." autocomplete="off"></textarea>
                 <button type="button" id="sendBtn" class="btn-primary btn-send" data-i18n-title="chat.sendBtn" title="Send" aria-label="Send">
                     <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="22" y1="2" x2="11" y2="13"></line>

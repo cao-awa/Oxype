@@ -45,6 +45,7 @@
     let messagesContainerEl;
     let chatComposerEl;
     let messageInputEl;
+    let messageFormatEl;
     let sendMessageBtnEl;
 
     let sessionOptionsBtnEl;
@@ -186,17 +187,117 @@
         return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
     }
 
-    /** Pulls the readable text out of a stored message record. */
-    function textOfMessage(msg) {
+    /**
+     * Pulls the readable body out of a stored message record, and says how it is meant
+     * to be rendered.
+     *
+     * A body counts as Markdown only when a piece says so, so a plain-text message is
+     * never reinterpreted as markup.
+     *
+     * @param {Object} msg
+     * @returns {{text: string, format: 'text'|'markdown'}}
+     */
+    function bodyOfMessage(msg) {
         if (Array.isArray(msg.pieces)) {
-            return msg.pieces
-                .filter(p => p && p.type === 'text')
-                .map(p => p.text || '')
+            // A Markdown piece wins if a message somehow carries both, so a body can
+            // never be silently downgraded to literal text.
+            const markdown = msg.pieces.filter(p => p && p.type === 'markdown');
+            const source = (markdown.length > 0 ? markdown : msg.pieces.filter(p => p && p.type === 'text'))
+                .map(p => (typeof p.text === 'string' ? p.text : ''))
                 .join('');
+            return { text: source, format: markdown.length > 0 ? 'markdown' : 'text' };
         }
-        if (typeof msg.pieces === 'string') return msg.pieces;
-        if (typeof msg.text === 'string') return msg.text;
-        return '';
+        if (typeof msg.pieces === 'string') return { text: msg.pieces, format: 'text' };
+        if (typeof msg.text === 'string') return { text: msg.text, format: 'text' };
+        return { text: '', format: 'text' };
+    }
+
+    /**
+     * How the outgoing body should be interpreted. The value is sent as the message
+     * piece type, so it travels with the message rather than being re-decided later.
+     */
+    const MESSAGE_FORMATS = ['text', 'markdown'];
+    const MESSAGE_FORMAT_STORAGE_KEY = 'oxype_message_format';
+    /** Tallest the composer textarea may grow before it scrolls, in pixels. */
+    const COMPOSER_MAX_HEIGHT = 200;
+
+    /** Reads the remembered body format, falling back to plain text. */
+    function readStoredMessageFormat() {
+        try {
+            const stored = window.localStorage ? window.localStorage.getItem(MESSAGE_FORMAT_STORAGE_KEY) : null;
+            if (stored && MESSAGE_FORMATS.indexOf(stored) !== -1) {
+                return stored;
+            }
+        } catch (e) {
+            // Storage can be unavailable; plain text is a safe default.
+        }
+        return 'text';
+    }
+
+    /** Remembers the chosen body format for the next visit. */
+    function writeStoredMessageFormat(format) {
+        try {
+            if (window.localStorage && MESSAGE_FORMATS.indexOf(format) !== -1) {
+                window.localStorage.setItem(MESSAGE_FORMAT_STORAGE_KEY, format);
+            }
+        } catch (e) {
+            // Persisting the preference is a convenience, never a hard requirement.
+        }
+    }
+
+    /** The body format currently selected in the composer. */
+    function getSelectedMessageFormat() {
+        if (messageFormatEl && MESSAGE_FORMATS.indexOf(messageFormatEl.value) !== -1) {
+            return messageFormatEl.value;
+        }
+        return 'text';
+    }
+
+    /** Reflects the selected format in the composer placeholder. */
+    function updateComposerForFormat() {
+        if (!messageInputEl) return;
+        const isMarkdown = getSelectedMessageFormat() === 'markdown';
+        const key = isMarkdown ? 'chat.inputPlaceholderMarkdown' : 'chat.inputPlaceholder';
+        const fallback = isMarkdown ? 'Markdown supported...' : 'Type a message...';
+        messageInputEl.setAttribute('placeholder', getI18nText(key, fallback));
+        messageInputEl.classList.toggle('composer-input-markdown', isMarkdown);
+    }
+
+    /**
+     * Sizes the composer textarea to its content.
+     *
+     * The height is reset first so the box shrinks when text is removed; measuring the
+     * content directly would leave it stuck at the tallest value it ever held.
+     */
+    function autoGrowComposer() {
+        if (!messageInputEl || messageInputEl.tagName !== 'TEXTAREA') return;
+        messageInputEl.style.height = 'auto';
+        const next = Math.min(messageInputEl.scrollHeight, COMPOSER_MAX_HEIGHT);
+        messageInputEl.style.height = `${next}px`;
+        messageInputEl.style.overflowY = messageInputEl.scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
+    }
+
+    /**
+     * Renders a message body to HTML.
+     *
+     * Plain text is escaped and its newlines preserved. Markdown goes through the
+     * bundled renderer, which escapes before it parses and only emits whitelisted tags.
+     * If the renderer is missing, the source is shown as escaped text rather than
+     * trusted.
+     */
+    function renderMessageBody(text, format) {
+        if (format === 'markdown' && window.OxypeMarkdown
+            && typeof window.OxypeMarkdown.toHtml === 'function') {
+            return window.OxypeMarkdown.toHtml(text);
+        }
+        return escapeHtml(text).replace(/\n/g, '<br>');
+    }
+
+    /** A one-line preview of a body for the rail, with its line breaks flattened. */
+    function previewOfBody(text) {
+        return String(text === null || text === undefined ? '' : text)
+            .replace(/[\r\n]+/g, ' ')
+            .trim();
     }
 
     // --------------------------------------------------------------- init ------
@@ -212,6 +313,7 @@
         messagesContainerEl = document.getElementById('messagesContainer');
         chatComposerEl = document.getElementById('chatComposer');
         messageInputEl = document.getElementById('messageInput');
+        messageFormatEl = document.getElementById('messageFormatSelect');
         sendMessageBtnEl = document.getElementById('sendMessageBtn');
 
         sessionOptionsBtnEl = document.getElementById('sessionOptionsBtn');
@@ -326,6 +428,37 @@
 
         if (chatComposerEl) chatComposerEl.addEventListener('submit', handleSendMessage);
         if (dialogOverlayEl) dialogOverlayEl.addEventListener('click', closeAllDialogs);
+
+        if (messageInputEl) {
+            // Enter sends and Shift+Enter inserts a newline, matching the usual chat
+            // gesture now that the composer is multi-line. A textarea does not submit
+            // its form on Enter, so this has to be handled explicitly. The IME guard
+            // keeps Enter from sending while a candidate list is open.
+            messageInputEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+                    && !e.isComposing && e.keyCode !== 229) {
+                    e.preventDefault();
+                    handleSendMessage(e);
+                }
+            });
+
+            // Grow with the content, up to a ceiling after which it scrolls.
+            messageInputEl.addEventListener('input', () => autoGrowComposer());
+        }
+
+        if (messageFormatEl) {
+            messageFormatEl.value = readStoredMessageFormat();
+            messageFormatEl.addEventListener('change', () => {
+                writeStoredMessageFormat(messageFormatEl.value);
+                // The placeholder is the only affordance explaining the mode.
+                updateComposerForFormat();
+            });
+            updateComposerForFormat();
+
+            // The placeholder is set from the dictionary rather than by data-i18n, since
+            // it depends on which format is selected, so it is refreshed by hand.
+            window.addEventListener('oxype:languageChanged', updateComposerForFormat);
+        }
 
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeAllDialogs();
@@ -1078,8 +1211,8 @@
             if (Array.isArray(messages) && messages.length > 0) {
                 if (messagesContainerEl) messagesContainerEl.innerHTML = '';
                 messages.forEach(msg => {
-                    const text = textOfMessage(msg);
-                    if (!text) return;
+                    const body = bodyOfMessage(msg);
+                    if (!body.text) return;
 
                     const senderId = (msg.sender !== undefined && msg.sender !== null) ? msg.sender : msg.userid;
                     const isSelf = Boolean(userId !== null && userId !== undefined && senderId !== null
@@ -1094,7 +1227,8 @@
                         : 0;
 
                     appendMessage({
-                        text,
+                        text: body.text,
+                        format: body.format,
                         sender: senderName,
                         isSelf,
                         timestamp: formatClockTime(timestampMs),
@@ -1116,6 +1250,8 @@
     function setComposerEnabled(enabled) {
         if (messageInputEl) messageInputEl.disabled = !enabled;
         if (sendMessageBtnEl) sendMessageBtnEl.disabled = !enabled;
+        // The format belongs to the composer, so it is inert until a conversation is.
+        if (messageFormatEl) messageFormatEl.disabled = !enabled;
     }
 
     /** Paints the active conversation's title and subtitle. */
@@ -1202,7 +1338,7 @@
             <div class="message-avatar" aria-hidden="true">${escapeHtml(avatarChar)}</div>
             <div class="message-bubble">
                 <div class="message-sender">${escapeHtml(senderName)}</div>
-                <div class="message-content">${escapeHtml(msg.text)}</div>
+                <div class="message-content${msg.format === 'markdown' ? ' message-content-markdown' : ''}">${renderMessageBody(msg.text, msg.format)}</div>
                 <div class="message-timestamp">${escapeHtml(msg.timestamp)}</div>
             </div>
         `;
@@ -1217,13 +1353,19 @@
         e.preventDefault();
         if (!activeSessionId || !messageInputEl) return;
 
-        const text = messageInputEl.value.trim();
-        if (!text) return;
+        // The raw value is sent, not a trimmed copy: leading spaces make a Markdown
+        // code block and trailing spaces are a Markdown hard line break. Emptiness is
+        // still judged on the trimmed text so whitespace alone cannot be sent.
+        const text = messageInputEl.value;
+        if (!text.trim()) return;
+
+        const format = getSelectedMessageFormat();
 
         const stored = auth();
         const userId = currentUserId();
 
         messageInputEl.value = '';
+        autoGrowComposer();
         messageInputEl.focus();
 
         const hint = document.getElementById('emptyConversationHint');
@@ -1234,15 +1376,18 @@
         const myName = currentUser && currentUser.username ? currentUser.username : 'Me';
         appendMessage({
             text,
+            format,
             sender: myName,
             isSelf: true,
             timestamp: formatClockTime(sentAtMs),
             timestampMs: sentAtMs
         });
-        updateActiveSessionPreview(myName, text);
+        updateActiveSessionPreview(myName, previewOfBody(text));
 
         try {
-            const res = await window.OxypeCore.sendMessage(activeSessionId, text, userId, stored ? stored.token : null);
+            const res = await window.OxypeCore.sendMessage(
+                activeSessionId, text, userId, stored ? stored.token : null, format
+            );
             if (res && typeof res.seq === 'number' && res.seq > 0) {
                 currentSeq = res.seq;
             }

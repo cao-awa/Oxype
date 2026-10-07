@@ -651,6 +651,108 @@ body {
     word-break: break-word;
 }
 
+/* ------------------------------------------------------ markdown bodies -----
+   Rendered by /markdown.js. The block renderer emits real newlines between tags, so
+   the inherited `white-space: pre-wrap` above would turn each of them into a blank
+   line; it is reset here and the spacing is expressed with margins instead. */
+.message-content-markdown {
+    white-space: normal;
+}
+
+.message-content-markdown > *:first-child {
+    margin-top: 0;
+}
+
+.message-content-markdown > *:last-child {
+    margin-bottom: 0;
+}
+
+.message-content-markdown .md-paragraph {
+    margin: 0 0 0.5em;
+}
+
+.message-content-markdown .md-heading {
+    margin: 0.6em 0 0.35em;
+    line-height: 1.25;
+    font-weight: 700;
+}
+
+.message-content-markdown .md-h1 { font-size: 1.35em; }
+.message-content-markdown .md-h2 { font-size: 1.2em; }
+.message-content-markdown .md-h3 { font-size: 1.08em; }
+.message-content-markdown .md-h4,
+.message-content-markdown .md-h5,
+.message-content-markdown .md-h6 { font-size: 1em; }
+
+.message-content-markdown .md-list {
+    margin: 0 0 0.5em;
+    padding-left: 1.35em;
+}
+
+.message-content-markdown .md-list-unordered { list-style: disc; }
+.message-content-markdown .md-list-ordered { list-style: decimal; }
+.message-content-markdown .md-list .md-list { margin-bottom: 0; }
+
+.message-content-markdown .md-list li {
+    margin: 0.1em 0;
+}
+
+.message-content-markdown .md-quote {
+    margin: 0 0 0.5em;
+    padding: 0.1em 0 0.1em 0.7em;
+    border-left: 3px solid var(--cl-edge-dark);
+    color: var(--cl-text-dim);
+    font-style: italic;
+}
+
+.message-content-markdown .md-pre {
+    margin: 0 0 0.5em;
+    padding: 6px 8px;
+    overflow-x: auto;
+    background-color: var(--cl-well);
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+}
+
+.message-content-markdown .md-code {
+    font-family: var(--cl-mono);
+    font-size: 12px;
+    white-space: pre;
+}
+
+.message-content-markdown .md-code-inline {
+    font-family: var(--cl-mono);
+    font-size: 12px;
+    padding: 0 3px;
+    background-color: var(--cl-well);
+    border: 1px solid var(--cl-edge-dark);
+}
+
+.message-content-markdown .md-link {
+    color: inherit;
+    text-decoration: underline;
+}
+
+.message-content-markdown .md-img {
+    max-width: 100%;
+    height: auto;
+    vertical-align: bottom;
+}
+
+.message-content-markdown .md-hr {
+    margin: 0.6em 0;
+    border: 0;
+    border-top: 1px solid var(--cl-edge-dark);
+}
+
+.message-content-markdown .md-task {
+    font-family: var(--cl-mono);
+}
+
+.message-content-markdown .md-task-done {
+    color: var(--cl-text-faint);
+}
+
 .message-timestamp {
     margin-top: 2px;
     font-family: var(--cl-mono);
@@ -682,12 +784,39 @@ body {
 
 .classic-composer {
     display: flex;
-    align-items: center;
+    /* Bottom-aligned so the button and format selector stay beside the last line as
+       the input grows, instead of drifting to its vertical centre. */
+    align-items: flex-end;
     gap: 8px;
     padding: 8px 12px 10px;
     background-color: var(--cl-face);
     border-top: var(--cl-bevel) solid;
     border-top-color: var(--cl-edge-light);
+}
+
+/* Message format selector, at the left end of the composer row. */
+.classic-format {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+.classic-format-select {
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--cl-text-dim);
+    background-color: var(--cl-face);
+    border: var(--cl-bevel) solid;
+    /* A raised edge: light top/left, dark bottom/right. */
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    cursor: pointer;
+}
+
+.classic-format-select:disabled {
+    color: var(--cl-text-faint);
+    background-color: var(--cl-face-active);
 }
 
 .classic-input {
@@ -701,6 +830,12 @@ body {
     color: var(--cl-text);
     font-family: inherit;
     font-size: 13px;
+    /* A textarea's own defaults are reset so it sits where the single-line input did.
+       The height is then driven by autoGrowComposer(). */
+    resize: none;
+    line-height: 1.5;
+    max-height: 200px;
+    overflow-y: hidden;
 }
 
 .classic-input:disabled,
@@ -851,10 +986,24 @@ body {
     font-size: 12.5px;
 }
 
+/* The shared style.css paints focus as a flat coloured border
+   (input:focus, select:focus, textarea:focus -> border-color: var(--border-focus)).
+   That selector has a higher specificity than a bare ".classic-input", so it won the
+   border and turned this skin's sunken well into a plain blue box whenever the
+   composer had focus -- the retro bevel survived only until the field was clicked.
+   These rules restate the bevel with focus specificity so the well keeps its carved
+   edges, and a colour change is deliberately not used to signal focus: a dotted
+   outline, drawn outside the border by the :focus-visible rule above, does that
+   instead and reads correctly on a beveled control. */
 .form-input:focus,
 .classic-input:focus,
-.select-control:focus {
+.select-control:focus,
+.form-input:focus-visible,
+.classic-input:focus-visible,
+.select-control:focus-visible {
     outline: none;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    box-shadow: none;
 }
 
 /* Rows in the settings toast, separated by engraved rules */

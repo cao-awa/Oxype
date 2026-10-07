@@ -6,19 +6,19 @@ import com.github.cao.awa.cason.codec.decoder.JSONDecoder
 import com.github.cao.awa.cason.codec.encoder.JSONEncoder
 import com.github.cao.awa.cason.obj.JSONObject
 import com.github.cao.awa.cason.primary.JSONNumber
-import com.github.cao.awa.cason.serialize.parser.JSONParser
 import com.github.kusa233.kalmia.server.network.KalmiaNetworkConfig
-import com.github.kusa233.kalmia.server.network.http.body.json.KalmiaHttpJsonBody
-import com.github.kusa233.kalmia.server.network.http.body.text.KalmiaHttpTextBody
 import com.github.kusa233.kalmia.server.network.http.builder.http
 import com.github.kusa233.kalmia.server.network.http.context.KalmiaHttpContext
 import com.github.kusa233.kalmia.server.network.http.entrypoint.service.KalmiaHttpService
 import com.github.kusa233.kalmia.server.network.http.placeholder.url.type.placeholder
+import com.github.kusa233.oxype.element.message.piece.MessageMarkdownPiece
+import com.github.kusa233.oxype.element.message.piece.MessagePiece
 import com.github.kusa233.oxype.element.message.piece.MessagePieces
 import com.github.kusa233.oxype.element.message.piece.MessageTextPiece
 import com.github.kusa233.oxype.exception.body.NeedJsonBodyException
 import com.github.kusa233.oxype.exception.login.AuthenticationException
 import com.github.kusa233.oxype.exception.request.MissingParameterException
+import com.github.kusa233.oxype.json.OxypeJsonParser
 import com.github.kusa233.oxype.message.MessageManager
 import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.manager.SessionManager
@@ -55,25 +55,33 @@ object OxypeHttpServer {
      */
     fun <T> KalmiaHttpContext.requireJsonBody(action: (JSONObject) -> T): T {
         enableCors()
-        val body = body()
-        if (body is KalmiaHttpJsonBody) {
-            return action(body.json)
-        }
-        if (body is KalmiaHttpTextBody) {
-            // Only the parse is guarded. Wrapping `action` as well would swallow the
-            // route's own aborts -- validation, auth and permission failures -- and
-            // mislabel every one of them as "Need json body". Browsers send
-            // cross-origin POSTs as text/plain, so that turned every failure into a
-            // bare 400 "Bad Request" that hid the real reason.
+
+        // Read the raw request text instead of Kalmia's pre-parsed body.
+        //
+        // Kalmia decodes an "application/json" body with Cason's JSONParser, and that
+        // parser hands back any string containing a backslash escape with a stray
+        // leading quote -- so a message whose text contained a newline (written `\n`)
+        // arrived already corrupted, and a Markdown post was mangled before any Oxype
+        // code could look at it. KalmiaHttpJsonBody keeps only the parsed object, so
+        // the damage cannot be undone downstream. The untouched request bytes are still
+        // available here, so every route reads them through OxypeJsonParser instead and
+        // both content types the client uses -- application/json same-origin and
+        // text/plain cross-origin, which browsers require to avoid a preflight -- are
+        // decoded the same correct way.
+        val raw = stringContent()
+        if (raw.isNotEmpty()) {
             val parsed = try {
-                JSONParser.parseObject(body.text)
+                OxypeJsonParser.parseObject(raw)
             } catch (e: Exception) {
+                // Not JSON at all. Fall through to the same 400 a malformed body
+                // produced before, rather than turning a client mistake into a 500.
                 null
             }
             if (parsed != null) {
                 return action(parsed)
             }
         }
+
         abortWith(
             NeedJsonBodyException.create("Need json body"),
             HttpResponseStatus.BAD_REQUEST,
@@ -142,6 +150,26 @@ object OxypeHttpServer {
     }
 
     fun KalmiaHttpContext.assertLong(value: Long?, name: String): Long {
+        if (value == null) {
+            abortWith(
+                MissingParameterException("Missing parameter '$name'"),
+                HttpResponseStatus.BAD_REQUEST,
+                this
+            )
+            // abortWith always throws; this line only satisfies the type checker.
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
+        return value
+    }
+
+    /**
+     * Requires a JSON array field to be present.
+     *
+     * `json.getArray(name)!!` used to be how this was written, which turned a body
+     * that simply omitted `pieces` into a KotlinNullPointerException and a 500. A
+     * missing or non-array value is a client mistake, so it is reported as one.
+     */
+    fun KalmiaHttpContext.assertJsonArray(value: JSONArray?, name: String): JSONArray {
         if (value == null) {
             abortWith(
                 MissingParameterException("Missing parameter '$name'"),
@@ -664,13 +692,42 @@ object OxypeHttpServer {
                 post {
                     requireJsonBody { json ->
                         requireJoinedSession(json, sessionId, SENDING_MESSAGE_FAILED_SEQ) {
-                            val pieces = json.getArray("pieces")!!
                             val sender = assertLong(json.longValue("userid", "userId"), "userid")
+                            val piecesJson = assertJsonArray(json.getArray("pieces"), "pieces")
+
+                            // Every piece is checked before any is decoded: an unknown
+                            // type would otherwise reach MessagePiece.decode and its
+                            // `CODECS[type]!!` would surface as a 500 instead of a 400
+                            // naming the offending type.
+                            piecesJson.forEach { element ->
+                                val piece = element as? JSONObject
+                                if (piece == null) {
+                                    abortWith(
+                                        MissingParameterException(
+                                            "Every entry of 'pieces' must be an object"
+                                        ),
+                                        HttpResponseStatus.BAD_REQUEST,
+                                        this
+                                    )
+                                    throw IllegalStateException("Unreachable: the request was aborted")
+                                }
+                                val type = piece.getString("type")
+                                if (!MessagePiece.isKnownType(type)) {
+                                    abortWith(
+                                        MissingParameterException(
+                                            "Unsupported message piece type '${type ?: ""}'"
+                                        ),
+                                        HttpResponseStatus.BAD_REQUEST,
+                                        this
+                                    )
+                                    throw IllegalStateException("Unreachable: the request was aborted")
+                                }
+                            }
 
                             val seq = MessageManager.sendMessage(
                                 sessionId,
                                 sender,
-                                MessagePieces.decode(pieces)
+                                MessagePieces.decode(piecesJson)
                             )
 
                             JSONObject {
@@ -768,9 +825,17 @@ object OxypeHttpServer {
                                     "hasMessage" set false
                                 }
                             } else {
+                                // Both body pieces contribute to the preview. Matching
+                                // only on MessageTextPiece left a Markdown-only message
+                                // with a blank second line in the conversation list.
                                 val text = lastMsg.pieces.pieces
-                                    .filterIsInstance<MessageTextPiece>()
-                                    .joinToString("") { it.text }
+                                    .joinToString("") { piece ->
+                                        when (piece) {
+                                            is MessageTextPiece -> piece.text
+                                            is MessageMarkdownPiece -> piece.text
+                                            else -> ""
+                                        }
+                                    }
                                 val senderUser = UserManager.getUser(lastMsg.sender)
                                 val senderName = senderUser?.username ?: "User #${lastMsg.sender}"
                                 JSONObject {
