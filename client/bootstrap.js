@@ -20,6 +20,18 @@
 (function (global) {
     'use strict';
 
+    // Keep the document blank until the bundled/custom assets have finished loading.
+    // The page is revealed by removing this class in finishLoading().
+    var loadingStyle = document.createElement('style');
+    loadingStyle.textContent = 'html.oxype-bootstrap-loading body { display: none !important; }';
+    document.documentElement.classList.add('oxype-bootstrap-loading');
+    document.head.appendChild(loadingStyle);
+
+    function finishLoading() {
+        document.documentElement.classList.remove('oxype-bootstrap-loading');
+        if (loadingStyle.parentNode) loadingStyle.parentNode.removeChild(loadingStyle);
+    }
+
     /** Bundled defaults, used when the matching override is empty. */
     var DEFAULT_HTML = '/chat.html';
     var DEFAULT_CSS = '/chat.css';
@@ -30,7 +42,7 @@
     // markdown.js is bundled rather than overridable: it is the renderer that has to
     // stay safe against another user's message, so it must not be replaceable by a
     // user-configured source. It loads before chat.js, which calls into it.
-    var BASE_SCRIPTS = ['/lang.js', '/style.js', '/core.js', '/markdown.js'];
+    var BASE_SCRIPTS = ['/lang.js', '/style.js', '/core.js', '/websocket.js', '/markdown.js'];
 
     /** Mirrors the server-side limit so a stored value can never be used unchecked. */
     var MAX_LENGTH = 128;
@@ -402,13 +414,17 @@
                 });
             });
 
-        chain.catch(function (error) {
-            // A handled fallback already reported itself; anything else is a bundled
-            // asset problem and is left to the console.
-            if (!error || !error.handled) {
-                console.error('[Bootstrap] Failed to load client assets:', error);
-            }
-        });
+        chain
+            .then(finishLoading)
+            .catch(function (error) {
+                // A handled fallback already reported itself; anything else is a bundled
+                // asset problem and is left to the console. Reveal the page regardless,
+                // so a broken optional asset cannot leave an invisible document forever.
+                if (!error || !error.handled) {
+                    console.error('[Bootstrap] Failed to load client assets:', error);
+                }
+                finishLoading();
+            });
     }
 
     function boot() {

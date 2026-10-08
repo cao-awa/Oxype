@@ -612,6 +612,15 @@ body {
     flex-direction: row-reverse;
 }
 
+.is-hidden {
+    display: none !important;
+}
+
+.message-avatar.is-hidden {
+    display: grid !important;
+    visibility: hidden;
+}
+
 .message-avatar {
     display: grid;
     place-items: center;
@@ -1243,6 +1252,14 @@ body {
     background-color: var(--cl-well);
 }
 
+.invite-details {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
 .invite-code {
     flex: 1;
     min-width: 0;
@@ -1251,6 +1268,13 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.invite-time {
+    flex-shrink: 0;
+    color: var(--cl-text-faint);
+    font-size: 10px;
+    white-space: nowrap;
 }
 
 .invite-copy-btn,

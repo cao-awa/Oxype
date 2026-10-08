@@ -109,17 +109,22 @@ object UserManager {
     }
 
     fun getUserByToken(token: String, userid: Long): User? {
-        var user: User? = null
-        if (this.loggedUsers[token] == null) {
-            val persistingToken = STORAGE.getString(createTokenKey(userid, token))
-            if (persistingToken == token) {
-                user = getUser(userid)
+        // A cached token is bound to the user id that minted it. Do not let a caller
+        // reuse a valid token with another userid (which would bypass session roles).
+        val cachedUserid = this.loggedUsers[token]
+        if (cachedUserid != null) {
+            return if (cachedUserid == userid) getUser(userid) else null
+        }
+
+        val persistingToken = STORAGE.getString(createTokenKey(userid, token))
+        if (persistingToken == token) {
+            val user = getUser(userid)
+            if (user != null) {
                 this.loggedUsers[token] = userid
             }
-        } else {
-            user = getUser(userid)
+            return user
         }
-        return user
+        return null
     }
 
     fun login(userid: Long): String {

@@ -10,16 +10,20 @@ import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_INVITE_UU
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.STORAGE
 import com.github.kusa233.oxype.user.manager.UserManager
+import com.github.kusa233.oxype.session.invite.InviteUuid
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
 import java.nio.charset.StandardCharsets
-import java.util.UUID
 
 object SessionManager {
     private val LOGGER: Logger = LogManager.getLogger("SessionManager")
 
     /** Maximum number of live invite UUIDs a single session may hold. */
     const val MAX_INVITE_UUIDS: Int = 10
+
+    /** Metadata limits enforced before a session is persisted. */
+    const val MAX_SESSION_NAME_LENGTH: Int = 100
+    const val MAX_SESSION_DESCRIPTION_LENGTH: Int = 1000
 
     fun createSession(sessionName: String, owner: Long = 0L, description: String = ""): Session {
         return createSession(STORAGE.incrementSessionId(), sessionName, owner, description)
@@ -39,7 +43,20 @@ object SessionManager {
     }
 
     fun saveSession(session: Session) {
+        validateMetadata(session.sessionName, session.description)
+        session.ensureOwnerIsMember()
         STORAGE[createSessionKey(session.sessionId)] = session
+    }
+
+    /** Validates and normalises user-editable session metadata. */
+    fun validateMetadata(name: String, description: String) {
+        require(name.isNotBlank()) { "Session name must not be blank" }
+        require(name.length <= MAX_SESSION_NAME_LENGTH) {
+            "Session name must be at most $MAX_SESSION_NAME_LENGTH characters"
+        }
+        require(description.length <= MAX_SESSION_DESCRIPTION_LENGTH) {
+            "Session description must be at most $MAX_SESSION_DESCRIPTION_LENGTH characters"
+        }
     }
 
     fun getSession(sessionId: Long): Session? {
@@ -139,7 +156,7 @@ object SessionManager {
             throw IllegalStateException("A session can hold at most $MAX_INVITE_UUIDS invite UUIDs")
         }
 
-        val uuid = UUID.randomUUID().toString()
+        val uuid = InviteUuid.generate().toString()
         val cleanUuid = normalizeInviteUuid(uuid)
         inviteList.uuids.add(cleanUuid)
         STORAGE[createSessionActiveUuidsKey(sessionId)] = inviteList

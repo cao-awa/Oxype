@@ -179,6 +179,22 @@
                     <button type="button" id="ssCreateInviteBtn" class="btn-secondary" data-i18n="chat.createInviteBtn">New Invite</button>
                 </div>
             </section>
+            <section id="sessionManageSection" class="classic-manage-section" style="display: none;">
+                <h4 class="dialog-section-title" data-i18n="chat.manageSectionTitle">Management</h4>
+                <form id="ssEditForm" class="dialog-form" novalidate>
+                    <div class="form-group">
+                        <label for="ssNameInput" class="form-label" data-i18n="chat.sessionNameField">Name</label>
+                        <input type="text" id="ssNameInput" class="form-input" autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label for="ssDescInput" class="form-label" data-i18n="chat.sessionDescField">Description</label>
+                        <input type="text" id="ssDescInput" class="form-input" autocomplete="off">
+                    </div>
+                    <div class="dialog-actions">
+                        <button type="submit" id="ssSaveBtn" class="btn-primary" data-i18n="chat.saveChangesBtn">Save Changes</button>
+                    </div>
+                </form>
+            </section>
             <div class="dialog-actions">
                 <button type="button" id="openMembersBtn" class="btn-secondary" data-i18n="chat.membersTitle">Members</button>
                 <button type="button" id="ssLeaveBtn" class="btn-danger" data-i18n="chat.leaveSessionBtn">Leave Conversation</button>

@@ -28,6 +28,12 @@
     // Calendar day of the last rendered message, so each date gets one separator
     let lastRenderedDateKey = '';
     let currentSeq = 0;
+    let websocketListenerBound = false;
+    let historyLoadingSessionId = null;
+    const pendingRealtimeMessages = new Map();
+    const renderedMessageKeys = new Set();
+    // Cache both in-flight and completed profile lookups so one sender is requested once.
+    const senderProfilePromises = new Map();
 
     // Style source form state, filled from the server on open
     let styleSourceDefaults = { html: '/chat.html', css: '/chat.css', js: '/chat.js' };
@@ -66,6 +72,11 @@
     let ssSessionDescEl;
     let ssSessionOwnerEl;
     let ssSessionIdEl;
+    let sessionManageSectionEl;
+    let ssEditFormEl;
+    let ssNameInputEl;
+    let ssDescInputEl;
+    let ssSaveBtnEl;
     let ssInviteSectionEl;
     let ssInviteHintEl;
     let ssInviteListEl;
@@ -349,6 +360,11 @@
         ssSessionDescEl = document.getElementById('ssSessionDesc');
         ssSessionOwnerEl = document.getElementById('ssSessionOwner');
         ssSessionIdEl = document.getElementById('ssSessionId');
+        sessionManageSectionEl = document.getElementById('sessionManageSection');
+        ssEditFormEl = document.getElementById('ssEditForm');
+        ssNameInputEl = document.getElementById('ssNameInput');
+        ssDescInputEl = document.getElementById('ssDescInput');
+        ssSaveBtnEl = document.getElementById('ssSaveBtn');
         ssInviteSectionEl = document.getElementById('ssInviteSection');
         ssInviteHintEl = document.getElementById('ssInviteHint');
         ssInviteListEl = document.getElementById('ssInviteList');
@@ -419,6 +435,11 @@
         setComposerEnabled(false);
         showEmptyConversationHint();
 
+        if (window.OxypeWebSocket) {
+            bindWebSocketMessages();
+            window.OxypeWebSocket.start(stored);
+        }
+
         await loadUserDataAndSessions(stored.userId);
 
         // Re-apply translations for any node this script built after load.
@@ -438,6 +459,7 @@
         if (closeSessionSettingsBtnEl) closeSessionSettingsBtnEl.addEventListener('click', closeAllDialogs);
         if (ssCreateInviteBtnEl) ssCreateInviteBtnEl.addEventListener('click', handleCreateInvite);
         if (ssLeaveBtnEl) ssLeaveBtnEl.addEventListener('click', handleLeaveSession);
+        if (ssEditFormEl) ssEditFormEl.addEventListener('submit', handleSaveSessionChanges);
         if (openMembersBtnEl) openMembersBtnEl.addEventListener('click', openMembersDialog);
 
         if (closeMembersBtnEl) closeMembersBtnEl.addEventListener('click', closeAllDialogs);
@@ -1097,7 +1119,7 @@
                 : `Session #${sessionId}`;
             const description = (isObject && session.description) ? session.description : '';
 
-            sessionsMap.set(String(sessionId), { sessionId, sessionName, description });
+            sessionsMap.set(String(sessionId), { sessionId, sessionName, description, lastActivity: (isObject && (session.lastActivity || session.timestamp)) || 0 });
 
             const btn = document.createElement('button');
             btn.type = 'button';
@@ -1168,6 +1190,7 @@
                     if (!previewEl) return;
                     if (lastMsg && lastMsg.hasMessage && (lastMsg.content || lastMsg.senderName)) {
                         previewEl.textContent = `${lastMsg.senderName || 'User'}: ${lastMsg.content || ''}`;
+                        moveSessionToTop(sessionId, lastMsg.timestamp);
                     } else {
                         previewEl.textContent = '';
                     }
@@ -1178,21 +1201,118 @@
         });
     }
 
+    function moveSessionToTop(sessionId, timestamp) {
+        if (!sessionListEl || sessionId === undefined || sessionId === null) return;
+        const id = String(sessionId);
+        const item = sessionListEl.querySelector(`[data-session-id="${id}"]`);
+        if (!item) return;
+        const entry = sessionsMap.get(id) || { sessionId: id };
+        const parsed = Number(timestamp);
+        const activity = Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
+        if (Number(entry.lastActivity || 0) > activity) return;
+        entry.lastActivity = activity;
+        sessionsMap.set(id, entry);
+        const first = sessionListEl.querySelector('.session-item');
+        if (first !== item) sessionListEl.insertBefore(item, first || null);
+    }
+
     /** Updates the preview line of the active row after sending. */
-    function updateActiveSessionPreview(senderName, content) {
+    function updateActiveSessionPreview(senderName, content, timestamp) {
         if (!activeSessionId || !sessionListEl) return;
         const item = sessionListEl.querySelector(`[data-session-id="${activeSessionId}"]`);
         const previewEl = item ? item.querySelector('.session-last-message') : null;
-        if (previewEl) {
-            previewEl.textContent = content ? `${senderName || 'User'}: ${content}` : '';
-        }
+        if (previewEl) previewEl.textContent = content ? `${senderName || 'User'}: ${content}` : '';
+        moveSessionToTop(activeSessionId, timestamp);
     }
 
     // -------------------------------------------------------------- session ----
 
     /** Loads a conversation's history, roster and metadata, then renders it. */
+
+    /** Refresh sender labels, initials and contiguous-group metadata after a profile resolves. */
+    function refreshRenderedSenderGroups() {
+        if (!messagesContainerEl) return;
+        let previousKey = null;
+        messagesContainerEl.querySelectorAll('.message-row').forEach(row => {
+            const senderName = row.dataset.senderName || 'User';
+            const senderKey = `${row.classList.contains('outgoing') ? 'self' : 'other'}:${senderName}`;
+            const continuesGroup = previousKey === senderKey;
+            row.dataset.senderKey = senderKey;
+            const label = row.querySelector('.message-sender');
+            if (label) {
+                label.textContent = senderName;
+                label.classList.toggle('is-hidden', continuesGroup);
+            }
+            const avatar = row.querySelector('.message-avatar');
+            if (avatar) {
+                avatar.textContent = senderName.trim().charAt(0).toUpperCase() || '?';
+                avatar.classList.toggle('is-hidden', continuesGroup);
+            }
+            previousKey = senderKey;
+        });
+    }
+
+    /** Resolve a fallback User #id sender once, then repaint all matching rows. */
+    function resolveFallbackSender(senderId) {
+        if (senderId === null || senderId === undefined || senderId === ''
+            || !window.OxypeCore || typeof window.OxypeCore.getUser !== 'function') return;
+        const id = String(senderId);
+        if (senderProfilePromises.has(id)) return;
+        const promise = Promise.resolve(window.OxypeCore.getUser(senderId))
+            .then(profile => {
+                const username = profile && (profile.username || profile.name);
+                if (!username) return;
+                activeSessionUsers.set(id, username);
+                if (!messagesContainerEl) return;
+                messagesContainerEl.querySelectorAll('.message-row').forEach(row => {
+                    if (row.dataset.senderId === id) row.dataset.senderName = username;
+                });
+                refreshRenderedSenderGroups();
+            })
+            .catch(err => console.warn(`[Classic] getUser/${senderId} skipped:`, err.message))
+            .finally(() => senderProfilePromises.set(id, Promise.resolve()));
+        senderProfilePromises.set(id, promise);
+    }
+
+    function bindWebSocketMessages() {
+        if (websocketListenerBound) return;
+        websocketListenerBound = true;
+        window.addEventListener('oxype:websocket:message', event => {
+            let payload = event && event.detail ? event.detail.data : null;
+            if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch (e) { return; } }
+            if (!payload || payload.type !== 'message') return;
+            const sid = payload.sessionId !== undefined ? payload.sessionId : payload.session_id;
+            if (sid == null || activeSessionId == null || String(sid) !== String(activeSessionId)) return;
+            if (historyLoadingSessionId === String(sid)) {
+                const queued = pendingRealtimeMessages.get(String(sid)) || [];
+                queued.push(payload);
+                pendingRealtimeMessages.set(String(sid), queued);
+                return;
+            }
+            const msg = payload.data || payload.message || {};
+            const id = msg.id !== undefined ? msg.id : msg.seq;
+            const key = String(sid) + ':' + (id !== undefined ? String(id) : JSON.stringify(msg));
+            if (renderedMessageKeys.has(key)) return;
+            renderedMessageKeys.add(key);
+            const body = bodyOfMessage(msg);
+            if (!body.text) return;
+            const senderId = msg.sender !== undefined ? msg.sender : msg.userid;
+            const uid = currentUser ? currentUser.id : null;
+            const self = uid != null && senderId != null && String(uid) === String(senderId);
+            const sender = self ? ((currentUser && currentUser.username) || 'Me') : (activeSessionUsers.get(String(senderId)) || ('User #' + senderId));
+            const stamp = Number(msg.timestamp) || Date.now();
+            const hint = document.getElementById('emptyConversationHint'); if (hint) hint.remove();
+            appendMessage({ text: body.text, format: body.format, sender: sender, senderId: senderId, isSelf: self, timestamp: formatClockTime(stamp), timestampMs: stamp });
+            if (!self && /^User #\d+$/.test(sender)) resolveFallbackSender(senderId);
+            updateActiveSessionPreview(sender, previewOfBody(body.text), stamp);
+        });
+    }
+
     async function selectSession(sessionId) {
+        if (window.OxypeWebSocket && window.OxypeWebSocket.subscribe) window.OxypeWebSocket.subscribe(sessionId);
+        renderedMessageKeys.clear();
         activeSessionId = sessionId;
+        historyLoadingSessionId = String(sessionId);
 
         if (sessionListEl) {
             sessionListEl.querySelectorAll('.session-item').forEach(el => {
@@ -1259,6 +1379,8 @@
                 messages.forEach(msg => {
                     const body = bodyOfMessage(msg);
                     if (!body.text) return;
+                    const historyId = msg.id !== undefined ? msg.id : msg.seq;
+                    if (historyId !== undefined) renderedMessageKeys.add(String(activeSessionId) + ':' + String(historyId));
 
                     const senderId = (msg.sender !== undefined && msg.sender !== null) ? msg.sender : msg.userid;
                     const isSelf = Boolean(userId !== null && userId !== undefined && senderId !== null
@@ -1276,10 +1398,12 @@
                         text: body.text,
                         format: body.format,
                         sender: senderName,
+                        senderId,
                         isSelf,
                         timestamp: formatClockTime(timestampMs),
                         timestampMs
                     });
+                    if (!isSelf && /^User #\d+$/.test(senderName)) resolveFallbackSender(senderId);
                 });
             } else {
                 showEmptyConversationHint();
@@ -1288,6 +1412,11 @@
             console.warn('[Classic] Failed to load message history:', err);
             showEmptyConversationHint();
         }
+
+        historyLoadingSessionId = null;
+        const queued = pendingRealtimeMessages.get(String(activeSessionId)) || [];
+        pendingRealtimeMessages.delete(String(activeSessionId));
+        queued.forEach(event => window.dispatchEvent(new CustomEvent('oxype:websocket:message', { detail: event })));
 
         if (messageInputEl) messageInputEl.focus();
     }
@@ -1378,12 +1507,27 @@
         row.className = `message-row ${msg.isSelf ? 'outgoing' : 'incoming'}`;
 
         const senderName = msg.sender || 'User';
+        const senderKey = `${msg.isSelf ? 'self' : 'other'}:${senderName}`;
+        const previousElement = messagesContainerEl.lastElementChild;
+        const previousSenderKey = previousElement && previousElement.classList.contains('message-row')
+            ? previousElement.dataset.senderKey
+            : null;
+        const continuesGroup = previousSenderKey === senderKey;
         const avatarChar = senderName.trim().charAt(0).toUpperCase() || '?';
 
+        // Keep the avatar on the last row of a consecutive sender group. When a new
+        // message extends the group, the previous row is no longer its visual end.
+        if (continuesGroup) {
+            const previousAvatar = previousElement.querySelector('.message-avatar');
+            if (previousAvatar) previousAvatar.classList.add('is-hidden');
+        }
+        row.dataset.senderKey = senderKey;
+        if (msg.senderId !== undefined && msg.senderId !== null) row.dataset.senderId = String(msg.senderId);
+        row.dataset.senderName = senderName;
         row.innerHTML = `
             <div class="message-avatar" aria-hidden="true">${escapeHtml(avatarChar)}</div>
             <div class="message-bubble">
-                <div class="message-sender">${escapeHtml(senderName)}</div>
+                <div class="message-sender${continuesGroup ? ' is-hidden' : ''}">${escapeHtml(senderName)}</div>
                 <div class="message-content${msg.format === 'markdown' ? ' message-content-markdown' : ''}">${renderMessageBody(msg.text, msg.format)}</div>
                 <div class="message-timestamp">${escapeHtml(msg.timestamp)}</div>
             </div>
@@ -1416,19 +1560,11 @@
 
         const hint = document.getElementById('emptyConversationHint');
         if (hint) hint.remove();
-
-        // Draw the bubble immediately; the server assigns the authoritative stamp.
         const sentAtMs = Date.now();
         const myName = currentUser && currentUser.username ? currentUser.username : 'Me';
-        appendMessage({
-            text,
-            format,
-            sender: myName,
-            isSelf: true,
-            timestamp: formatClockTime(sentAtMs),
-            timestampMs: sentAtMs
-        });
-        updateActiveSessionPreview(myName, previewOfBody(text));
+        appendMessage({ text, format, sender: myName, isSelf: true,
+            timestamp: formatClockTime(sentAtMs), timestampMs: sentAtMs });
+        updateActiveSessionPreview(myName, previewOfBody(text), sentAtMs);
 
         try {
             const res = await window.OxypeCore.sendMessage(
@@ -1599,8 +1735,68 @@
         if (ssSessionDescEl) {
             ssSessionDescEl.textContent = info.description || getI18nText('chat.noDescription', 'No description');
         }
-        if (ssSessionOwnerEl) ssSessionOwnerEl.textContent = info.owner ? `#${info.owner}` : '-';
+        if (ssSessionOwnerEl) {
+            const ownerId = info.owner;
+            ssSessionOwnerEl.textContent = ownerId ? `#${ownerId}` : '-';
+            if (ownerId) {
+                window.OxypeCore.getUser(ownerId)
+                    .then(user => {
+                        if (ssSessionOwnerEl && String((activeSessionInfo || {}).owner) === String(ownerId)
+                            && user && user.username) {
+                            ssSessionOwnerEl.textContent = user.username;
+                        }
+                    })
+                    .catch(() => {
+                        // Keep the owner id visible when the profile request fails.
+                    });
+            }
+        }
         if (ssSessionIdEl) ssSessionIdEl.textContent = String(activeSessionId);
+        const canManage = Boolean(info.isOwner || info.isAdmin);
+        if (sessionManageSectionEl) sessionManageSectionEl.style.display = canManage ? 'block' : 'none';
+        if (ssNameInputEl) ssNameInputEl.value = info.sessionName || '';
+        if (ssDescInputEl) ssDescInputEl.value = info.description || '';
+    }
+
+    /** Saves the conversation name/description (owner or admin). */
+    async function handleSaveSessionChanges(e) {
+        e.preventDefault();
+        if (!activeSessionId) return;
+        const stored = auth();
+        const changes = {
+            name: ssNameInputEl ? ssNameInputEl.value.trim() : '',
+            description: ssDescInputEl ? ssDescInputEl.value.trim() : ''
+        };
+        if (!changes.name) {
+            toast(getI18nText('chat.createSessionErrEmpty', 'Please enter a conversation name.'), 'warning');
+            if (ssNameInputEl) ssNameInputEl.focus();
+            return;
+        }
+        if (ssSaveBtnEl) ssSaveBtnEl.disabled = true;
+        try {
+            activeSessionInfo = await window.OxypeCore.updateSession(activeSessionId, changes, currentUserId(), stored ? stored.token : null) || activeSessionInfo;
+            const sessionKey = String(activeSessionId);
+            const cached = sessionsMap.get(sessionKey) || { sessionId: activeSessionId };
+            cached.sessionName = activeSessionInfo.sessionName || changes.name;
+            cached.description = activeSessionInfo.description || changes.description || '';
+            sessionsMap.set(sessionKey, cached);
+            const sessionItem = sessionListEl ? sessionListEl.querySelector(`[data-session-id="${sessionKey}"]`) : null;
+            if (sessionItem) {
+                const nameEl = sessionItem.querySelector('.session-name');
+                const avatarEl = sessionItem.querySelector('.session-avatar');
+                const sessionName = cached.sessionName || `Session #${activeSessionId}`;
+                if (nameEl) nameEl.textContent = sessionName;
+                if (avatarEl) avatarEl.textContent = sessionName.trim().charAt(0).toUpperCase() || '#';
+            }
+            renderSessionSettings();
+            updateActiveSessionHeader();
+            toast(getI18nText('chat.updateSuccess', 'Conversation updated.'), 'success');
+        } catch (err) {
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            toast(getI18nText('chat.updateFailed', `Failed to update: ${reason}`, { reason }), 'error');
+        } finally {
+            if (ssSaveBtnEl) ssSaveBtnEl.disabled = false;
+        }
     }
 
     /** Renders the invite UUIDs, which only the owner or an admin may see or manage. */
@@ -1658,9 +1854,17 @@
             const row = document.createElement('div');
             row.className = 'invite-item';
 
+            const details = document.createElement('div');
+            details.className = 'invite-details';
+
             const code = document.createElement('span');
             code.className = 'invite-code';
             code.textContent = cleanUuid;
+            details.appendChild(code);
+            const time = document.createElement('span');
+            time.className = 'invite-time';
+            time.textContent = formatInviteUuidTime(cleanUuid);
+            details.appendChild(time);
 
             const copyBtn = document.createElement('button');
             copyBtn.type = 'button';
@@ -1674,19 +1878,43 @@
             revokeBtn.textContent = getI18nText('chat.revokeInviteBtn', 'Revoke');
             revokeBtn.addEventListener('click', () => handleRevokeInvite(cleanUuid));
 
-            row.appendChild(code);
+            row.appendChild(details);
             row.appendChild(copyBtn);
             row.appendChild(revokeBtn);
             ssInviteListEl.appendChild(row);
         });
     }
 
-    /** Copies an invite UUID to the clipboard. */
+    /** Formats the UUID v7 Unix-millisecond timestamp as yyyy:mm:dd:HH:mm:ss. */
+    function formatInviteUuidTime(uuid) {
+        const hex = String(uuid || '').replace(/[^0-9a-f]/gi, '');
+        if (hex.length < 12 || hex.charAt(12).toLowerCase() !== '7') return '';
+        const milliseconds = parseInt(hex.slice(0, 12), 16);
+        if (!Number.isFinite(milliseconds)) return '';
+        const date = new Date(milliseconds);
+        if (Number.isNaN(date.getTime())) return '';
+        const pad = value => String(value).padStart(2, '0');
+        return `${date.getFullYear()}:${pad(date.getMonth() + 1)}:${pad(date.getDate())}:${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    }
+
+    /** Copies an invite UUID to the clipboard, including insecure-context fallback. */
     function handleCopyInvite(uuid) {
+        const cleanUuid = String(uuid || '').replace(/^"|"$/g, '').trim();
         const done = () => toast(getI18nText('chat.copied', 'Copied to clipboard'), 'success');
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(uuid).then(done).catch(() => { });
-        }
+            navigator.clipboard.writeText(cleanUuid).then(done).catch(() => copyInviteFallback(cleanUuid, done));
+        } else copyInviteFallback(cleanUuid, done);
+    }
+
+    function copyInviteFallback(text, done) {
+        const input = document.createElement('textarea');
+        input.value = text;
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.appendChild(input);
+        input.focus();
+        input.select();
+        try { if (document.execCommand('copy')) done(); } finally { input.remove(); }
     }
 
     /** Generates a new invite UUID (owner only). */
@@ -1943,6 +2171,9 @@
     // -------------------------------------------------------------- logout -----
 
     function handleLogout() {
+        if (window.OxypeWebSocket) {
+            window.OxypeWebSocket.stop();
+        }
         if (window.OxypeCore) window.OxypeCore.clearAuth();
         // This page lives one level below the client root.
         window.location.href = '../index.html';

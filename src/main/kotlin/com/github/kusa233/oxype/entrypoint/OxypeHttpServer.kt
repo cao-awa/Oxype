@@ -14,6 +14,7 @@ import com.github.kusa233.kalmia.server.network.http.placeholder.url.type.placeh
 import com.github.kusa233.oxype.element.message.piece.MessageMarkdownPiece
 import com.github.kusa233.oxype.element.message.piece.MessagePiece
 import com.github.kusa233.oxype.element.message.piece.MessagePieces
+import com.github.kusa233.oxype.entrypoint.OxypeWebSocketServer
 import com.github.kusa233.oxype.element.message.piece.MessageTextPiece
 import com.github.kusa233.oxype.exception.body.NeedJsonBodyException
 import com.github.kusa233.oxype.exception.login.AuthenticationException
@@ -759,6 +760,10 @@ object OxypeHttpServer {
                                 MessagePieces.decode(piecesJson)
                             )
 
+                            // Publish only after persistence succeeds, using canonical JSON.
+                            MessageManager.getMessage(sessionId, seq)?.let { message ->
+                                OxypeWebSocketServer.publishMessage(sessionId, sender, message)
+                            }
                             JSONObject {
                                 "seq" set seq
                             }
@@ -958,13 +963,31 @@ object OxypeHttpServer {
                             val session = requireSession(sessionId)
 
                             requireSessionAdmin(session, user.id) {
-                                json.getString("name")?.takeIf { it.isNotBlank() }?.let {
-                                    session.sessionName = it
+                                val name = json.getString("name")
+                                val description = json.getString("description")
+                                if (name == null && description == null) {
+                                    abortWith(
+                                        MissingParameterException("At least one of 'name' or 'description' is required"),
+                                        HttpResponseStatus.BAD_REQUEST,
+                                        this
+                                    )
                                 }
-                                json.getString("description")?.let {
-                                    session.description = it
+                                name?.let {
+                                    if (it.isBlank()) {
+                                        abortWith(
+                                            IllegalArgumentException("Session name must not be blank"),
+                                            HttpResponseStatus.BAD_REQUEST,
+                                            this
+                                        )
+                                    }
+                                    session.sessionName = it.trim()
                                 }
-                                SessionManager.saveSession(session)
+                                description?.let { session.description = it.trim() }
+                                try {
+                                    SessionManager.saveSession(session)
+                                } catch (e: IllegalArgumentException) {
+                                    abortWith(e, HttpResponseStatus.BAD_REQUEST, this)
+                                }
                                 sessionView(session, user.id)
                             }
                         }

@@ -260,7 +260,7 @@
             'chat.sessionInfoTitle': '会话信息',
             'chat.sessionNameField': '名称',
             'chat.sessionDescField': '描述',
-            'chat.sessionOwnerField': '群主',
+            'chat.sessionOwnerField': '所有者',
             'chat.sessionIdField': '会话 ID',
             'chat.noDescription': '暂无描述',
             'chat.membersTitle': '成员列表',

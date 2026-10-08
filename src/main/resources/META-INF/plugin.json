@@ -1,10 +1,8 @@
 {
     "name": "oxype",
-    "entrypoint": [
-        "com.github.kusa233.oxype.entrypoint.OxypeHttpServer",
-        "com.github.kusa233.oxype.entrypoint.OxypeWebSocketServer"
-    ],
+    "entrypoint": "com.github.kusa233.oxype.entrypoint.OxypeBootstrap#bootstrap",
     "depends_on": [
         "kalmia-rocksdb"
-    ]
+    ],
+    "unload": "com.github.kusa233.oxype.entrypoint.OxypeBootstrap#unload"
 }
