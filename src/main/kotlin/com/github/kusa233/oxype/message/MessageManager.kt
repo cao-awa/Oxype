@@ -1,12 +1,10 @@
 package com.github.kusa233.oxype.message
 
-import com.github.cao.awa.cason.obj.JSONObject
+import com.github.cao.awa.cason.serialize.parser.JSONParser
 import com.github.cao.awa.cason.util.bytes.BytesUtil
-import com.github.cao.awa.cason.util.math.SkippedBase256
+import com.github.cao.awa.cason.util.math.Base256
 import com.github.kusa233.oxype.element.message.Message
-import com.github.kusa233.oxype.element.message.piece.MessagePiece
 import com.github.kusa233.oxype.element.message.piece.MessagePieces
-import com.github.kusa233.oxype.json.OxypeJsonParser
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_MESSAGE_SEQ_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_RECEIVED_MESSAGE_SEQ_PREFIX
@@ -22,7 +20,7 @@ object MessageManager {
     }
 
     fun maxReceivedMessageSeq(sessionId: Long): Long {
-        val key = BytesUtil.concat(SESSION_MESSAGE_SEQ_PREFIX, SkippedBase256.longToBuf(sessionId))
+        val key = BytesUtil.concat(SESSION_MESSAGE_SEQ_PREFIX, Base256.longToBuf(sessionId))
 
         return STORAGE[key, Long::class] ?: 0L
     }
@@ -37,27 +35,22 @@ object MessageManager {
     fun createReceivedMessageSeqKey(userid: Long, sessionId: Long): ByteArray {
         return BytesUtil.concat(
             SESSION_RECEIVED_MESSAGE_SEQ_PREFIX,
-            SkippedBase256.longToBuf(userid),
-            SkippedBase256.longToBuf(sessionId)
+            Base256.longToBuf(userid),
+            Base256.longToBuf(sessionId)
         )
     }
 
     fun createMessageKey(sessionId: Long, messageId: Long): ByteArray {
         return BytesUtil.concat(
             SESSION_PREFIX,
-            SkippedBase256.longToBuf(sessionId),
-            SkippedBase256.longToBuf(messageId)
+            Base256.longToBuf(sessionId),
+            Base256.longToBuf(messageId)
         )
     }
 
     fun getMessage(sessionId: Long, messageSeq: Long): Message? {
         val source = STORAGE[createMessageKey(sessionId, messageSeq), String::class] ?: return null
-        // Read through OxypeJsonParser rather than Cason's own reader. A stored message is
-        // JSON written by Cason's (correct) encoder, but any body containing a newline is
-        // stored with a `\n` escape, and Cason 1.0.35 hands escaped strings back with a
-        // stray leading quote -- which would corrupt every multi-line message as it was
-        // read back, and lengthen it on each subsequent round trip.
-        val json = OxypeJsonParser.parseObject(source)
+        val json = JSONParser.parseObject(source)
         return Message.decode(json)
     }
 

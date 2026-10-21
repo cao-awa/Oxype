@@ -6,6 +6,7 @@ import com.github.cao.awa.cason.codec.decoder.JSONDecoder
 import com.github.cao.awa.cason.codec.encoder.JSONEncoder
 import com.github.cao.awa.cason.obj.JSONObject
 import com.github.cao.awa.cason.primary.JSONNumber
+import com.github.cao.awa.cason.serialize.parser.JSONParser
 import com.github.kusa233.kalmia.server.network.KalmiaNetworkConfig
 import com.github.kusa233.kalmia.server.network.http.builder.http
 import com.github.kusa233.kalmia.server.network.http.context.KalmiaHttpContext
@@ -19,7 +20,6 @@ import com.github.kusa233.oxype.element.message.piece.MessageTextPiece
 import com.github.kusa233.oxype.exception.body.NeedJsonBodyException
 import com.github.kusa233.oxype.exception.login.AuthenticationException
 import com.github.kusa233.oxype.exception.request.MissingParameterException
-import com.github.kusa233.oxype.json.OxypeJsonParser
 import com.github.kusa233.oxype.message.MessageManager
 import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.manager.SessionManager
@@ -57,22 +57,10 @@ object OxypeHttpServer {
     fun <T> KalmiaHttpContext.requireJsonBody(action: (JSONObject) -> T): T {
         enableCors()
 
-        // Read the raw request text instead of Kalmia's pre-parsed body.
-        //
-        // Kalmia decodes an "application/json" body with Cason's JSONParser, and that
-        // parser hands back any string containing a backslash escape with a stray
-        // leading quote -- so a message whose text contained a newline (written `\n`)
-        // arrived already corrupted, and a Markdown post was mangled before any Oxype
-        // code could look at it. KalmiaHttpJsonBody keeps only the parsed object, so
-        // the damage cannot be undone downstream. The untouched request bytes are still
-        // available here, so every route reads them through OxypeJsonParser instead and
-        // both content types the client uses -- application/json same-origin and
-        // text/plain cross-origin, which browsers require to avoid a preflight -- are
-        // decoded the same correct way.
         val raw = stringContent()
         if (raw.isNotEmpty()) {
             val parsed = try {
-                OxypeJsonParser.parseObject(raw)
+                JSONParser.parseObject(raw)
             } catch (e: Exception) {
                 // Not JSON at all. Fall through to the same 400 a malformed body
                 // produced before, rather than turning a client mistake into a 500.

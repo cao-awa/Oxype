@@ -1,7 +1,7 @@
 package com.github.kusa233.oxype.user.manager
 
 import com.github.cao.awa.cason.util.bytes.BytesUtil
-import com.github.cao.awa.cason.util.math.SkippedBase256
+import com.github.cao.awa.cason.util.math.Base256
 import com.github.kusa233.oxype.hash.password.PasswordHasher
 import com.github.kusa233.oxype.session.list.SessionList
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.STORAGE
@@ -174,7 +174,7 @@ object UserManager {
     fun createTokenKey(userid: Long, token: String): ByteArray {
         return BytesUtil.concat(
             USER_TOKEN_PREFIX,
-            SkippedBase256.longToBuf(userid),
+            Base256.longToBuf(userid),
             token.toByteArray(StandardCharsets.UTF_8)
         )
     }
@@ -182,11 +182,11 @@ object UserManager {
     fun createJoinedSessionsKey(userid: Long): ByteArray {
         return BytesUtil.concat(
             USER_JOINED_SESSIONS_PREFIX,
-            SkippedBase256.longToBuf(userid),
+            Base256.longToBuf(userid),
         )
     }
 
     fun createUserKey(userid: Long): ByteArray {
-        return BytesUtil.concat(USER_PREFIX, SkippedBase256.longToBuf(userid))
+        return BytesUtil.concat(USER_PREFIX, Base256.longToBuf(userid))
     }
 }

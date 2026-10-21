@@ -2,7 +2,7 @@ package com.github.kusa233.oxype.storage.database
 
 import com.github.benmanes.caffeine.cache.Caffeine
 import com.github.cao.awa.cason.util.bytes.BytesUtil
-import com.github.cao.awa.cason.util.math.SkippedBase256
+import com.github.cao.awa.cason.util.math.Base256
 import com.github.kusa233.kalmia.rocksdb.db.KalmiaRocksDB
 import com.github.kusa233.oxype.storage.OxypeStorage
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_MESSAGE_SEQ_PREFIX
@@ -23,7 +23,7 @@ object OxypeDatabase : OxypeStorage {
     override fun <T : Any> get(key: ByteArray, type: KClass<T>): T? {
         val result = this.cache.getIfPresent((key.contentToString()))
         if (result != null) {
-            return result as T?
+            return result as T
         }
         return this.db[key, type].also {
             if (it != null) {
@@ -81,7 +81,7 @@ object OxypeDatabase : OxypeStorage {
     }
 
     override fun incrementMessageSeq(sessionId: Long): Long {
-        val key = BytesUtil.concat(SESSION_MESSAGE_SEQ_PREFIX, SkippedBase256.longToBuf(sessionId))
+        val key = BytesUtil.concat(SESSION_MESSAGE_SEQ_PREFIX, Base256.longToBuf(sessionId))
         var result: Long? = this.db[key]
         if (result == null) {
             result = 1L

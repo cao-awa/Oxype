@@ -1,8 +1,7 @@
 package com.github.kusa233.oxype.session.manager
 
 import com.github.cao.awa.cason.util.bytes.BytesUtil
-import com.github.cao.awa.cason.util.math.SkippedBase256
-import com.github.kusa233.oxype.session.LegacySession
+import com.github.cao.awa.cason.util.math.Base256
 import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.invite.SessionInviteList
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_ACTIVE_UUIDS_PREFIX
@@ -11,13 +10,9 @@ import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.STORAGE
 import com.github.kusa233.oxype.user.manager.UserManager
 import com.github.kusa233.oxype.session.invite.InviteUuid
-import org.apache.logging.log4j.LogManager
-import org.apache.logging.log4j.Logger
 import java.nio.charset.StandardCharsets
 
 object SessionManager {
-    private val LOGGER: Logger = LogManager.getLogger("SessionManager")
-
     /** Maximum number of live invite UUIDs a single session may hold. */
     const val MAX_INVITE_UUIDS: Int = 10
 
@@ -60,39 +55,15 @@ object SessionManager {
     }
 
     fun getSession(sessionId: Long): Session? {
-        val key = createSessionKey(sessionId)
+        val session = STORAGE[createSessionKey(sessionId), Session::class] ?: return null
 
-        val session = try {
-            STORAGE[key, Session::class]
-        } catch (e: Exception) {
-            // Records written before the owner/admins/members/description fields
-            // existed cannot be decoded as a Session, because their list nodes are
-            // missing. Read them through the legacy shape and upgrade in place.
-            upgradeLegacySession(key)
-        } ?: return null
-
-        // Older records predate the owner field; keep the owner visible as a member.
+        // Keep the owner visible as a member.
         session.ensureOwnerIsMember()
         return session
     }
 
-    /** Reads a pre-owner session record and rewrites it in the current shape. */
-    private fun upgradeLegacySession(key: ByteArray): Session? {
-        val legacy = try {
-            STORAGE[key, LegacySession::class]
-        } catch (e: Exception) {
-            LOGGER.warn("Unreadable session record, ignoring it: ${e.message}")
-            null
-        } ?: return null
-
-        val upgraded = legacy.toSession()
-        STORAGE[key] = upgraded
-        LOGGER.info("Upgraded legacy session ${upgraded.sessionId} to the current schema")
-        return upgraded
-    }
-
     fun createSessionKey(sessionId: Long): ByteArray {
-        return BytesUtil.concat(SESSION_PREFIX, SkippedBase256.longToBuf(sessionId))
+        return BytesUtil.concat(SESSION_PREFIX, Base256.longToBuf(sessionId))
     }
 
     fun normalizeInviteUuid(uuid: String): String {
@@ -113,7 +84,7 @@ object SessionManager {
     fun createSessionActiveUuidsKey(sessionId: Long): ByteArray {
         return BytesUtil.concat(
             SESSION_ACTIVE_UUIDS_PREFIX,
-            SkippedBase256.longToBuf(sessionId)
+            Base256.longToBuf(sessionId)
         )
     }
 

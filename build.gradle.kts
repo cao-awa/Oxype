@@ -14,8 +14,8 @@ repositories {
 
 dependencies {
     implementation("com.github.cao-awa:Kalmia:1.0.34")
-    implementation("com.github.cao-awa:Kalmia-rocksdb:1.0.9")
-    implementation("com.github.cao-awa:cason:1.0.35")
+    implementation("com.github.cao-awa:Kalmia-rocksdb:1.0.10")
+    implementation("com.github.cao-awa:Cason:1.0.37")
     implementation("org.rocksdb:rocksdbjni:10.10.1.1")
     implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
 

@@ -13,8 +13,8 @@ import io.netty.handler.codec.http.HttpServerCodec
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler
 import com.github.cao.awa.cason.obj.JSONObject
+import com.github.cao.awa.cason.serialize.parser.JSONParser
 import com.github.kusa233.oxype.element.message.Message
-import com.github.kusa233.oxype.json.OxypeJsonParser
 import com.github.kusa233.oxype.user.manager.UserManager
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
@@ -206,16 +206,16 @@ object OxypeWebSocketServer {
         override fun channelRead0(ctx: io.netty.channel.ChannelHandlerContext, frame: TextWebSocketFrame) {
             ctxRef = ctx
             val payload = frame.text()
-            val json = runCatching { OxypeJsonParser.parseObject(payload) }.getOrNull()
+            val json = runCatching { JSONParser.parseObject(payload) }.getOrNull()
             val type = json?.getString("type")
 
             when (type) {
                 "auth" -> {
-                    val userid = json?.getLong("userid")
-                        ?: json?.getString("userid")?.toLongOrNull()
-                        ?: json?.getLong("userId")
-                        ?: json?.getString("userId")?.toLongOrNull()
-                    val token = json?.getString("token")
+                    val userid = json.getLong("userid")
+                        ?: json.getString("userid")?.toLongOrNull()
+                        ?: json.getLong("userId")
+                        ?: json.getString("userId")?.toLongOrNull()
+                    val token = json.getString("token")
                     authenticated = userid != null && !token.isNullOrBlank() && UserManager.verifyToken(userid, token)
                     if (authenticated) {
                         userId = userid
@@ -230,10 +230,10 @@ object OxypeWebSocketServer {
                 }
                 "ping" -> if (authenticated) ctx.writeAndFlush(TextWebSocketFrame("{\"type\":\"pong\"}"))
                 "subscribe", "unsubscribe" -> if (authenticated) {
-                    val sessionId = json?.getLong("sessionId")
-                        ?: json?.getString("sessionId")?.toLongOrNull()
-                        ?: json?.getLong("session_id")
-                        ?: json?.getString("session_id")?.toLongOrNull()
+                    val sessionId = json.getLong("sessionId")
+                        ?: json.getString("sessionId")?.toLongOrNull()
+                        ?: json.getLong("session_id")
+                        ?: json.getString("session_id")?.toLongOrNull()
                     val uid = userId
                     if (sessionId == null || uid == null || !UserManager.getJoinedSessions(uid).contains(sessionId)) {
                         ctx.writeAndFlush(TextWebSocketFrame("{\"type\":\"error\",\"code\":\"forbidden\"}"))
