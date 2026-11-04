@@ -89,15 +89,20 @@
 
             <!-- Message Input & Composer -->
             <footer class="chat-composer" id="chatComposer" style="display: none;">
-                <!-- Body format for the next message, at the bottom-left of the chat pane -->
-                <label class="composer-format" for="messageFormatSelect"
-                       data-i18n-title="chat.formatLabel" title="Message format">
-                    <span class="visually-hidden" data-i18n="chat.formatLabel">Message format</span>
-                    <select id="messageFormatSelect" class="composer-format-select">
-                        <option value="text" data-i18n="chat.formatText">Plain text</option>
-                        <option value="markdown" data-i18n="chat.formatMarkdown">Markdown</option>
-                    </select>
-                </label>
+                <!-- Body format for the next message, at the left end of the composer row.
+                     It is a button in the send button's family rather than a dropdown
+                     control, so the two ends of the row read as a matched pair. The
+                     visible label is a single letter; the full wording lives in the
+                     popup it opens, on its tooltip and in its accessible name, and the
+                     letter itself is painted by chat.js from the stored format. -->
+                <button type="button" id="messageFormatSelect"
+                        class="btn-primary btn-send composer-format-btn"
+                        data-i18n-title="chat.formatLabelLong"
+                        title="Message format (T = plain text, M = Markdown)"
+                        aria-label="Message format (T = plain text, M = Markdown)"
+                        aria-haspopup="true" aria-expanded="false">
+                    <span class="composer-format-letter">T</span>
+                </button>
                 <textarea id="messageInput" class="chat-input" rows="1"
                        data-i18n-placeholder="chat.inputPlaceholder" 
                        placeholder="Type a message..." autocomplete="off"></textarea>

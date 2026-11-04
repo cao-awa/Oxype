@@ -719,29 +719,7 @@
                 throw new Error('Session ID is required to send message');
             }
 
-            let pieces;
-            if (Array.isArray(content)) {
-                // An explicit pieces array is forwarded verbatim: a caller that builds
-                // its own pieces has already decided each one's type.
-                pieces = content;
-            } else if (typeof content === 'string') {
-                if (!content.trim()) {
-                    throw new Error('Message content cannot be empty');
-                }
-                // The server only decodes piece types it has a codec for, so an
-                // unrecognised type is rejected here rather than sent and refused.
-                const type = messageType === 'markdown' ? 'markdown' : 'text';
-                pieces = [
-                    {
-                        type: type,
-                        // Deliberately not trimmed: leading whitespace makes a fenced
-                        // code block, and trailing whitespace is a Markdown line break.
-                        text: content
-                    }
-                ];
-            } else {
-                throw new Error('Invalid message content');
-            }
+            const pieces = this.buildMessagePieces(content, messageType);
 
             const payload = this.authBody(userId, token, {
                 pieces: pieces
@@ -751,6 +729,100 @@
                 method: 'POST',
                 body: payload
             });
+        }
+
+        /**
+         * Replace the body of an existing message.
+         * POST /editMessage/{sessionId}
+         * Payload: { userid, token, messageId, pieces: [...] }
+         *
+         * The sender and the original timestamp are preserved by the server; only the
+         * pieces change and `editedAt` is stamped, so a client that reloads history
+         * still shows the message where it always was.
+         *
+         * @param {number|string} sessionId - Session the message belongs to
+         * @param {number|string} messageId - id of the message to rewrite
+         * @param {string|Array<{type: string, text: string}>} content - New body
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @param {'text'|'markdown'} [messageType='text']
+         * @returns {Promise<{success: boolean, message: Object}>}
+         */
+        async editMessage(sessionId, messageId, content, userId = null, token = null, messageType = 'text') {
+            if (!sessionId) {
+                throw new Error('Session ID is required to edit a message');
+            }
+
+            const pieces = this.buildMessagePieces(content, messageType);
+            const payload = this.authBody(userId, token, {
+                messageId: this.toNumericId(messageId),
+                pieces: pieces
+            });
+
+            return await this.request(`/editMessage/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: payload
+            });
+        }
+
+        /**
+         * Remove a message from a session.
+         * POST /deleteMessage/{sessionId}
+         * Payload: { userid, token, messageId }
+         *
+         * @param {number|string} sessionId
+         * @param {number|string} messageId
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @returns {Promise<{success: boolean, messageId: number}>}
+         */
+        async deleteMessage(sessionId, messageId, userId = null, token = null) {
+            if (!sessionId) {
+                throw new Error('Session ID is required to delete a message');
+            }
+
+            const payload = this.authBody(userId, token, {
+                messageId: this.toNumericId(messageId)
+            });
+
+            return await this.request(`/deleteMessage/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: payload
+            });
+        }
+
+        /**
+         * Normalises a message body into the pieces array the server expects.
+         *
+         * Shared by send and edit so both accept exactly the same shapes: a caller
+         * that can author a message can also revise it without switching APIs.
+         *
+         * @param {string|Array<{type: string, text: string}>} content
+         * @param {'text'|'markdown'} [messageType='text']
+         * @returns {Array<{type: string, text: string}>}
+         */
+        buildMessagePieces(content, messageType = 'text') {
+            if (Array.isArray(content)) {
+                // An explicit pieces array is forwarded verbatim: a caller that builds
+                // its own pieces has already decided each one's type.
+                return content;
+            }
+            if (typeof content !== 'string') {
+                throw new Error('Invalid message content');
+            }
+            if (!content.trim()) {
+                throw new Error('Message content cannot be empty');
+            }
+            // The server only decodes piece types it has a codec for, so an
+            // unrecognised type is rejected here rather than sent and refused.
+            return [
+                {
+                    type: messageType === 'markdown' ? 'markdown' : 'text',
+                    // Deliberately not trimmed: leading whitespace makes a fenced
+                    // code block, and trailing whitespace is a Markdown line break.
+                    text: content
+                }
+            ];
         }
 
         /**

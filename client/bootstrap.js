@@ -22,14 +22,62 @@
 
     // Keep the document blank until the bundled/custom assets have finished loading.
     // The page is revealed by removing this class in finishLoading().
+    //
+    // The spinner is written here rather than in the page markup for the same reason
+    // the rest of this file exists: chat.html may be replaced by a user's own copy at
+    // any moment, so a progress indicator that lived in the markup would vanish on
+    // exactly the loads that take longest.
+    var LOADING_CLASS = 'oxype-bootstrap-loading';
+
     var loadingStyle = document.createElement('style');
-    loadingStyle.textContent = 'html.oxype-bootstrap-loading body { display: none !important; }';
-    document.documentElement.classList.add('oxype-bootstrap-loading');
+    loadingStyle.textContent = [
+        'html.' + LOADING_CLASS + ' body { display: none !important; }',
+        // The body stays hidden, so the surface behind the spinner is painted on the
+        // root element instead; it disappears with the class.
+        'html.' + LOADING_CLASS + ' { background-color: #f5f6f8; }',
+        '@media (prefers-color-scheme: dark) {',
+        '  html.' + LOADING_CLASS + ' { background-color: #15171c; }',
+        '}',
+        '.oxype-bootstrap-spinner {',
+        '  position: fixed;',
+        '  top: 50%;',
+        '  left: 50%;',
+        '  width: 34px;',
+        '  height: 34px;',
+        '  margin: -17px 0 0 -17px;',
+        '  box-sizing: border-box;',
+        '  border: 3px solid rgba(127, 127, 127, 0.25);',
+        '  border-top-color: #4a6cf7;',
+        '  border-radius: 50%;',
+        '  animation: oxype-bootstrap-spin 0.8s linear infinite;',
+        '  pointer-events: none;',
+        '}',
+        '@media (prefers-color-scheme: dark) {',
+        '  .oxype-bootstrap-spinner { border-top-color: #7b96ff; }',
+        '}',
+        // A spinner is decorative motion; slowing it keeps the wait readable for
+        // anyone who asked their system to reduce animation.
+        '@media (prefers-reduced-motion: reduce) {',
+        '  .oxype-bootstrap-spinner { animation-duration: 2.4s; }',
+        '}',
+        '@keyframes oxype-bootstrap-spin { to { transform: rotate(360deg); } }'
+    ].join('\n');
+
+    document.documentElement.classList.add(LOADING_CLASS);
     document.head.appendChild(loadingStyle);
 
+    // Appended to the root element, not the body: the body is display:none while this
+    // is on screen. A node added to <html> by script is not re-parented by the parser,
+    // so it survives the rest of the page being parsed.
+    var loadingSpinner = document.createElement('div');
+    loadingSpinner.className = 'oxype-bootstrap-spinner';
+    loadingSpinner.setAttribute('aria-hidden', 'true');
+    document.documentElement.appendChild(loadingSpinner);
+
     function finishLoading() {
-        document.documentElement.classList.remove('oxype-bootstrap-loading');
+        document.documentElement.classList.remove(LOADING_CLASS);
         if (loadingStyle.parentNode) loadingStyle.parentNode.removeChild(loadingStyle);
+        if (loadingSpinner.parentNode) loadingSpinner.parentNode.removeChild(loadingSpinner);
     }
 
     /** Bundled defaults, used when the matching override is empty. */

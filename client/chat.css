@@ -3,10 +3,29 @@
  * Controls two-pane chat layout, sidebar, active conversation view, message bubbles, and composer.
  */
 
+/*
+ * Tighter corner set for this skin.
+ *
+ * The radii live in style.css, which is shared with index.html and register.html
+ * and is never user-overridable, so redefining them here keeps the change confined
+ * to the chat page instead of restyling the login flow as a side effect. The values
+ * are deliberately small rather than zero: the skin reads as squarer than before
+ * without turning into the hard right angles of the classic skin.
+ */
+:root {
+    --radius-sm: 3px;
+    --radius-md: 5px;
+    --radius-lg: 8px;
+}
+
 .chat-app-layout {
     display: flex;
     width: 100vw;
     height: 100vh;
+    /* The dynamic viewport unit follows the browser toolbar on a phone as it
+       slides away, so the composer is not left underneath it. The line above is
+       the fallback for engines that do not know the unit. */
+    height: 100dvh;
     overflow: hidden;
     background-color: var(--bg-base);
 }
@@ -201,7 +220,11 @@
 .user-avatar-sm {
     width: 34px;
     height: 34px;
-    border-radius: var(--radius-full);
+    /* Squared off to match the conversation avatar in the session list: people and
+       conversations are drawn in the same frame, so they read as one kind of badge
+       rather than two. The radius stops short of zero, which is what the classic
+       skin does. */
+    border-radius: var(--radius-md);
     background-color: var(--primary-color);
     color: #ffffff;
     display: flex;
@@ -381,7 +404,9 @@
 .message-avatar {
     width: 34px;
     height: 34px;
-    border-radius: var(--radius-full);
+    /* Same frame as the conversation avatar and the footer profile badge, so every
+       initial in the app is the same shape. See .session-avatar. */
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -547,6 +572,103 @@
     text-align: right;
 }
 
+/* Marks a message whose body was changed after it was sent. Kept dim and small so it
+   reads as metadata rather than as part of the message. */
+.message-edited-mark {
+    font-style: italic;
+    opacity: 0.85;
+}
+
+/* Right-click message menu. Fixed positioning places it at the pointer, since the
+   message list scrolls and an absolutely positioned menu would drift with it. The
+   z-index sits above the message list but below the dialogs (1000) and the toast layer
+   (9999), so a toast raised by the menu is never hidden behind it. */
+.message-menu {
+    position: fixed;
+    z-index: 950;
+    min-width: 148px;
+    padding: 6px;
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+}
+
+.message-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.message-menu-item:hover {
+    background-color: var(--bg-surface-hover);
+}
+
+.message-menu-item:focus-visible {
+    outline: none;
+    background-color: var(--bg-surface-hover);
+}
+
+.message-menu-danger {
+    color: var(--danger-color);
+}
+
+.message-menu-danger:hover,
+.message-menu-danger:focus-visible {
+    background-color: var(--danger-light);
+    color: var(--danger-hover);
+}
+
+/* In-place message editor, shown where the body was so the message stays in view. */
+.message-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.message-editor-input {
+    width: 100%;
+    min-height: 60px;
+    max-height: 200px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.95rem;
+    line-height: 1.45;
+    resize: vertical;
+}
+
+.message-editor-input:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+.message-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* An outgoing row is mirrored, so its editor keeps the text and the button row on the
+   right where the rest of that side's content sits. */
+.message-row.outgoing .message-editor-actions {
+    flex-direction: row-reverse;
+}
+
 /* Date boundary: the date sits on the far left with a divider running beside it */
 .message-date-separator {
     display: flex;
@@ -581,6 +703,11 @@
        line as the input grows, instead of drifting to its vertical centre. */
     align-items: flex-end;
     gap: 12px;
+    /* Height of a single composer row, shared by the textarea and the format selector
+       so both controls are exactly as tall as each other at rest. Derived from
+       .chat-input below: line box (1.45 * 0.95rem) + 12px/12px padding + 1px/1px
+       border. Bottom alignment then keeps them flush as the input grows. */
+    --composer-row-height: calc(1.45 * 0.95rem + 26px);
 }
 
 .chat-input {
@@ -593,43 +720,74 @@
        driven by autoGrowComposer(). */
     resize: none;
     line-height: 1.45;
+    /* Matches the format selector's single-row height so both controls align at rest
+       as well as when grown. */
+    height: var(--composer-row-height);
     max-height: 200px;
     overflow-y: hidden;
     font-family: inherit;
 }
 
-/* Message format selector, at the left end of the composer row. */
-.composer-format {
-    display: inline-flex;
-    align-items: center;
-    flex: 0 0 auto;
-}
-
-.composer-format-select {
-    padding: 8px 10px;
-    font-size: 0.8rem;
-    border-radius: var(--radius-full);
-    color: var(--text-secondary);
-    background-color: var(--bg-surface-hover);
-    border: 1px solid var(--border-color);
-    cursor: pointer;
-}
-
-.composer-format-select:hover {
-    color: var(--text-primary);
-}
-
-.composer-format-select:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-}
-
+/* Send button. Declared before .composer-format-btn on purpose: the format trigger
+   reuses this class for its fill and type, then narrows the padding, and both selectors
+   have equal specificity, so the narrowing only wins if it comes later in the file. */
 .btn-send {
     border-radius: var(--radius-full);
     padding: 10px 20px;
     font-size: 0.95rem;
     /* Keeps the button on the composer's baseline when the input grows. */
     flex: 0 0 auto;
+}
+
+/* Message format trigger, at the left end of the composer row.
+   It is a plain button in the send button's family (see .btn-send above) rather than a
+   select, so the two ends of the row are the same kind of control. Only the box is
+   narrowed: the fill, radius and font come from the shared button classes. */
+.composer-format-btn {
+    /* The same single-row height as .chat-input, so the row stays level at rest and
+       keeps level as the input grows. */
+    height: var(--composer-row-height);
+    padding: 0 14px;
+    /* Wide enough for either single-letter label without the button changing size when
+       the label switches: the min-width, not the glyph, is what sets the width. */
+    min-width: calc(var(--composer-row-height) + 4px);
+    /* Keeps the button on the composer's baseline when the input grows. */
+    flex: 0 0 auto;
+}
+
+.composer-format-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+/* The letter is the trigger's only visible content, so it is centred by the button's
+   own flex layout and sized up slightly to stay legible at a narrow width. */
+.composer-format-letter {
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.02em;
+}
+
+/* Format popup. It reuses the message menu's shell (.message-menu) for the frame,
+   shadow and item metrics; this only adds the anchoring width and the selected marker. */
+.composer-format-menu {
+    min-width: 132px;
+}
+
+.composer-format-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+/* The check is drawn beside the active entry rather than making it a different colour,
+   so the selected row stays readable in both themes. */
+.composer-format-option-active::after {
+    content: '\2713';
+    font-size: 0.85em;
+    color: var(--primary-color);
 }
 
 /* Interactive Dialogs (Toast Popups) */
@@ -962,7 +1120,9 @@
     justify-content: center;
     width: 30px;
     height: 30px;
-    border-radius: 50%;
+    /* Was a hardcoded 50%: the one avatar that did not go through a radius token.
+       It now uses the same one as every other initial in the skin. */
+    border-radius: var(--radius-md);
     background-color: var(--primary-color);
     color: #ffffff;
     font-size: 0.8rem;
@@ -1071,21 +1231,202 @@
     font-size: 0.78rem;
 }
 
-/* Responsive adjustments */
+/* ---------------------------------------------------------------- mobile ----
+   A phone has no room for two panes side by side, so the same markup switches to
+   a single pane: the conversation fills the screen and the sidebar becomes a
+   drawer that slides in over it. The drawer is the only way back to the session
+   list, so a header button opens it and every action that finishes a navigation
+   closes it again. */
+
+/* The drawer button is created by the script because the markup can be replaced
+   by a custom chat.html; the rule hides it until the narrow layout needs it. */
+.chat-sidebar-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 auto;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.chat-sidebar-toggle:hover {
+    background-color: var(--bg-surface-hover);
+    color: var(--text-primary);
+}
+
+.chat-sidebar-toggle:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+}
+
+/* Sits above the conversation but below the drawer itself, so the drawer can be
+   dismissed by tapping the visible remainder of the message list. */
+.chat-sidebar-scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+    background-color: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    transition: opacity var(--transition-normal);
+}
+
+.chat-sidebar-scrim.is-visible {
+    opacity: 1;
+}
+
 @media (max-width: 768px) {
     .chat-sidebar {
-        width: 100%;
-        position: absolute;
-        z-index: 10;
-        left: 0;
+        position: fixed;
         top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(86vw, 320px);
+        min-width: 0;
+        z-index: 10;
+        /* The notch and the home indicator eat into the screen edges on a phone in
+           landscape, so the drawer keeps its content clear of both. */
+        padding-left: env(safe-area-inset-left);
+        padding-bottom: env(safe-area-inset-bottom);
+        transform: translateX(-100%);
+        /* Sliding the drawer out of sight is not enough on its own: a translated
+           element still takes part in the tab order, so its controls would be
+           focusable off screen. Hiding it also delays the slide until the closing
+           transition has finished, hence the matching delay. */
+        visibility: hidden;
+        transition: transform var(--transition-normal), visibility 0s linear var(--transition-normal);
     }
 
-    .chat-sidebar.collapsed {
-        transform: translateX(-100%);
+    .chat-sidebar.is-open {
+        transform: translateX(0);
+        visibility: visible;
+        box-shadow: var(--shadow-xl);
+        transition: transform var(--transition-normal), visibility 0s;
+    }
+
+    .chat-sidebar-scrim {
+        display: block;
+        pointer-events: none;
+    }
+
+    .chat-sidebar-scrim.is-visible {
+        pointer-events: auto;
     }
 
     .chat-main {
         width: 100%;
+    }
+
+    .chat-sidebar-toggle {
+        display: inline-flex;
+    }
+
+    /* The header grows to clear the status bar instead of keeping its desktop
+       height, which would have squeezed the title out of view. */
+    .chat-header {
+        height: auto;
+        min-height: 56px;
+        gap: 8px;
+        padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+    }
+
+    .current-session-info {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .current-session-title,
+    .current-session-id {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Narrow screens cannot spare the desktop margins, and the transcript gains a
+       little width back for the bubbles. */
+    .chat-messages-container {
+        padding: 16px 12px;
+    }
+
+    .chat-composer {
+        gap: 8px;
+        padding: 12px;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+        padding-left: calc(12px + env(safe-area-inset-left));
+        padding-right: calc(12px + env(safe-area-inset-right));
+    }
+
+    /* Bubbles are clamped to three quarters of the pane on desktop, which leaves
+       too little text per line on a phone; the sender is right-aligned anyway, so
+       the indent is the only thing lost. */
+    .message-row {
+        max-width: 88%;
+    }
+
+    /* Touch targets. The icons stay the same size; only the boxes around them grow
+       to the 44px a fingertip needs. */
+    .chat-sidebar-toggle,
+    .session-settings-btn,
+    .settings-icon-btn {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    .message-menu-item {
+        padding: 12px 14px;
+        font-size: 1rem;
+    }
+
+    .btn-send,
+    .btn-primary,
+    .btn-secondary,
+    .btn-create-session {
+        min-height: 44px;
+    }
+
+    .dialog-close-btn {
+        min-width: 44px;
+        min-height: 44px;
+        justify-content: center;
+    }
+
+    /* Text controls are raised to 16px because a smaller font makes mobile Safari
+       zoom the whole page in when the control is focused, and it never zooms back
+       out. The composer row height is derived from that font size, so it has to be
+       recomputed here too or the format button and the input would drift apart. */
+    .chat-input,
+    .message-editor-input {
+        font-size: 16px;
+    }
+
+    .chat-composer {
+        --composer-row-height: calc(1.45 * 16px + 26px);
+    }
+
+    /* The letter keeps its own size; only the box around it has to clear 44px. */
+    .composer-format-btn {
+        padding: 0 16px;
+        min-width: calc(var(--composer-row-height) + 8px);
+    }
+
+    /* The dialogs are a fixed 400px box with generous padding on desktop, which is
+       wider than a phone screen. */
+    .interactive-dialog {
+        width: calc(100vw - 24px);
+        max-width: none;
+        max-height: calc(100dvh - 32px);
+        padding: 18px;
+        overflow-y: auto;
+    }
+
+    .dialog-body {
+        max-height: calc(100dvh - 200px);
     }
 }

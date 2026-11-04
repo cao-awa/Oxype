@@ -57,6 +57,10 @@ object SessionManager {
     fun getSession(sessionId: Long): Session? {
         val session = STORAGE[createSessionKey(sessionId), Session::class] ?: return null
 
+        // Cason restores numbers that fit in 32 bits as Integer; rewrite them as
+        // long before any caller can hold the instance.
+        session.normaliseStoredIds()
+
         // Keep the owner visible as a member.
         session.ensureOwnerIsMember()
         return session

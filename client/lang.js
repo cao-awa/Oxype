@@ -55,10 +55,16 @@
             'chat.noSessionsHint': 'When you join or are added to sessions, they will appear here.',
             'chat.selectSessionHint': 'Select a conversation from the sidebar',
             'chat.inputPlaceholder': 'Type a message...',
-            'chat.inputPlaceholderMarkdown': 'Markdown supported: **bold**, `code`, - lists',
+            'chat.inputPlaceholderMarkdown': 'Type a message...',
             'chat.formatLabel': 'Message format',
-            'chat.formatText': 'Plain text',
-            'chat.formatMarkdown': 'Markdown',
+            'chat.formatLabelLong': 'Message format (T = plain text, M = Markdown)',
+            // The trigger button shows one letter so it stays narrow; the full wording
+            // is kept in the paired *Long keys, which the popup entries, the button's
+            // accessible name and the confirmation toast use.
+            'chat.formatText': 'T',
+            'chat.formatMarkdown': 'M',
+            'chat.formatTextLong': 'Plain text',
+            'chat.formatMarkdownLong': 'Markdown',
             'chat.sendBtn': 'Send',
             'chat.logoutBtn': 'Log Out',
             'chat.currentUser': 'Logged in as: {username} (ID: {userId})',
@@ -162,7 +168,19 @@
             'chat.styleSourcesRiskIntro': 'Only use style sources that you control or fully trust. The files you point to replace this interface and are loaded into your browser.',
             'chat.styleSourcesRiskJs': 'An embedded chat.js runs with your login credentials. If the source is untrusted, an attacker could use it to steal your account, read your conversations, or send messages as you.',
             'chat.styleSourcesRiskAck': 'I have verified that these sources are trustworthy, and I accept the risk.',
-            'chat.styleSourcesRiskConfirmBtn': 'Confirm and Save'
+            'chat.styleSourcesRiskConfirmBtn': 'Confirm and Save',
+
+            // Message actions (right-click menu, inline editing)
+            'chat.messageEditBtn': 'Edit',
+            'chat.messageDeleteBtn': 'Delete',
+            'chat.messageEditedMark': 'edited',
+            'chat.messageEditSaved': 'Message updated.',
+            'chat.messageEditFailed': 'Failed to edit: {reason}',
+            'chat.messageDeleteConfirm': 'Delete this message? Everyone will lose it, and this cannot be undone.',
+            'chat.messageDeleted': 'Message deleted.',
+            'chat.messageDeleteFailed': 'Failed to delete: {reason}',
+            'chat.messageEditForbidden': 'Only the author can edit this message.',
+            'chat.messageDeleteForbidden': 'Only the author or a conversation admin can delete this message.'
         },
 
         'zh-CN': {
@@ -210,10 +228,16 @@
             'chat.noSessionsHint': '当您加入或创建新会话后，会在此处显示。',
             'chat.selectSessionHint': '从左侧列表中选择一个会话',
             'chat.inputPlaceholder': '输入消息...',
-            'chat.inputPlaceholderMarkdown': '支持 Markdown：**粗体**、`代码`、- 列表',
+            'chat.inputPlaceholderMarkdown': '输入消息...',
             'chat.formatLabel': '消息格式',
-            'chat.formatText': '纯文本',
-            'chat.formatMarkdown': 'Markdown',
+            'chat.formatLabelLong': '消息格式（T = 纯文本，M = Markdown）',
+            // Same one-letter labels as the English table: the trigger button is narrow
+            // by design, and T/M are read as the format initials in both languages. The
+            // popup entries and the confirmation toast use the full names below.
+            'chat.formatText': 'T',
+            'chat.formatMarkdown': 'M',
+            'chat.formatTextLong': '纯文本',
+            'chat.formatMarkdownLong': 'Markdown',
             'chat.sendBtn': '发送',
             'chat.logoutBtn': '退出登录',
             'chat.currentUser': '当前用户: {username} (ID: {userId})',
@@ -317,7 +341,19 @@
             'chat.styleSourcesRiskIntro': '请仅使用您自己控制或完全信任的样式来源。您指向的文件会替换当前界面，并加载到您的浏览器中。',
             'chat.styleSourcesRiskJs': '外链的 chat.js 会以您的登录凭证运行。若来源不可信，攻击者可能借此盗取您的账号、读取您的会话内容，或以您的身份发送消息。',
             'chat.styleSourcesRiskAck': '我已确认上述来源可信，并自行承担相应风险。',
-            'chat.styleSourcesRiskConfirmBtn': '确认并保存'
+            'chat.styleSourcesRiskConfirmBtn': '确认并保存',
+
+            // Message actions (right-click menu, inline editing)
+            'chat.messageEditBtn': '编辑',
+            'chat.messageDeleteBtn': '删除',
+            'chat.messageEditedMark': '已编辑',
+            'chat.messageEditSaved': '消息已更新。',
+            'chat.messageEditFailed': '编辑失败：{reason}',
+            'chat.messageDeleteConfirm': '删除这条消息？所有成员都将看不到它，且无法恢复。',
+            'chat.messageDeleted': '消息已删除。',
+            'chat.messageDeleteFailed': '删除失败：{reason}',
+            'chat.messageEditForbidden': '只有作者可以编辑此消息。',
+            'chat.messageDeleteForbidden': '只有作者或会话管理员可以删除此消息。'
         }
     };
 

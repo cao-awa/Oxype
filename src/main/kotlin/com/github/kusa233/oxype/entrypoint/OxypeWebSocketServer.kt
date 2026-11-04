@@ -45,16 +45,69 @@ object OxypeWebSocketServer {
     private var bossGroup: EventLoopGroup? = null
     private var workerGroup: EventLoopGroup? = null
 
-    /** Publishes a persisted message to subscribed users other than [sender]. */
+    /**
+     * Publishes a persisted message to every subscribed client of the session.
+     *
+     * The sender's own other clients are included on purpose: one account signed
+     * in on a phone and a desktop is two connections, and the message written on
+     * the phone still has to appear on the desktop. The client that performed the
+     * send de-duplicates by message id, so it ignores the echo of a row it already
+     * appended optimistically.
+     */
     @JvmStatic
-    fun publishMessage(sessionId: Long, sender: Long, message: Message) {
+    fun publishMessage(sessionId: Long, message: Message) {
         val payload = JSONObject {
             "type" set "message"
             "sessionId" set sessionId
             "data" set message.encode()
         }.toString()
         clients.forEach { client ->
-            if (client.isSubscribed(sessionId) && client.userId != sender) {
+            if (client.isSubscribed(sessionId)) {
+                client.send(payload)
+            }
+        }
+    }
+
+    /**
+     * Tells subscribed users that a message body changed.
+     *
+     * The editor is included as well: it has no local copy of the server's edit
+     * stamp, so excluding it would leave the author's own view of their edit stale.
+     */
+    @JvmStatic
+    fun publishMessageEdit(sessionId: Long, message: Message) {
+        broadcastToSession(
+            sessionId,
+            JSONObject {
+                "type" set "messageEdited"
+                "sessionId" set sessionId
+                "data" set message.encode()
+            }.toString()
+        )
+    }
+
+    /**
+     * Tells subscribed users that a message is gone.
+     *
+     * The deleted body is never echoed back; only the identity and the remaining
+     * body, so a removed message cannot be recovered from the wire by a client that
+     * missed it while offline.
+     */
+    @JvmStatic
+    fun publishMessageDelete(sessionId: Long, messageId: Long) {
+        broadcastToSession(
+            sessionId,
+            JSONObject {
+                "type" set "messageDeleted"
+                "sessionId" set sessionId
+                "messageId" set messageId
+            }.toString()
+        )
+    }
+
+    private fun broadcastToSession(sessionId: Long, payload: String) {
+        clients.forEach { client ->
+            if (client.isSubscribed(sessionId)) {
                 client.send(payload)
             }
         }

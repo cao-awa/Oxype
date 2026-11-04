@@ -38,8 +38,8 @@ data class Session(
     }
 
     fun removeMember(userid: Long) {
-        members.removeAll { toLong(it) == userid }
-        admins.removeAll { toLong(it) == userid }
+        removeIds(members, userid)
+        removeIds(admins, userid)
     }
 
     fun addAdmin(userid: Long) {
@@ -50,7 +50,45 @@ data class Session(
     }
 
     fun removeAdmin(userid: Long) {
-        admins.removeAll { toLong(it) == userid }
+        removeIds(admins, userid)
+    }
+
+    /**
+     * Drops every stored representation of [userid] from [ids].
+     *
+     * Written against the erased list on purpose. A `(Long) -> Boolean`
+     * predicate makes the JVM insert an implicit `checkcast Long` on each
+     * element before the body runs, but a value decoded from JSON is an
+     * Integer whenever it fits in 32 bits — the cast threw before [toLong]
+     * could normalise anything. Typing the parameter `Any?` removes the cast
+     * and lets [toLong] do the comparing.
+     */
+    private fun removeIds(ids: MutableList<Long>, userid: Long) {
+        @Suppress("UNCHECKED_CAST")
+        val erased = ids as MutableList<Any?>
+        erased.removeAll { toLong(it) == userid }
+    }
+
+    /**
+     * Rewrites the id lists so they hold real longs.
+     *
+     * Storage round-trips through JSON, and Cason restores any number that fits
+     * in 32 bits as an Integer. Normalising once, at the decode boundary, keeps
+     * every later read — `.forEach { add(it) }` into a JSON array, `firstOrNull`,
+     * arithmetic — free of that surprise.
+     */
+    fun normaliseStoredIds() {
+        normaliseIds(members)
+        normaliseIds(admins)
+    }
+
+    private fun normaliseIds(ids: MutableList<Long>) {
+        @Suppress("UNCHECKED_CAST")
+        val erased = ids as MutableList<Any?>
+        if (erased.all { it is Long }) return
+        val normalised = erased.mapNotNull { toLong(it) }
+        ids.clear()
+        ids.addAll(normalised)
     }
 
     /** Non-null snapshot of the member ids, for encoding and rendering. */

@@ -20,6 +20,9 @@
     let currentUser = null;
     let activeSessionId = null;
     const sessionsMap = new Map();
+    // One preview re-read per conversation at a time. A delete made here also comes
+    // back as a broadcast, and both paths ask the server the same question.
+    const previewRefreshes = new Map();
 
     // Roster of the active conversation, keyed by user id, for sender names
     const activeSessionUsers = new Map();
@@ -34,6 +37,21 @@
     const renderedMessageKeys = new Set();
     // Cache both in-flight and completed profile lookups so one sender is requested once.
     const senderProfilePromises = new Map();
+
+    // Scrollback paging. Older messages are fetched when the reader scrolls all the way
+    // up to the oldest loaded message, one page per arrival at that point.
+    // One page is deliberately large: the reader scrolls a long way before another
+    // request is made, so the transcript never pulls in earlier messages while the
+    // ones already on screen are still being read.
+    const HISTORY_PAGE_SIZE = 200;
+    // A conversation whose messages were deleted in bulk would otherwise turn every
+    // upward scroll into an endless chain of requests, so the descent gives up.
+    const HISTORY_MAX_EMPTY_PAGES = 10;
+    let historyOldestSeq = null;
+    let historyReachedTop = false;
+    let historyPageInFlight = false;
+    let historyEmptyPageStreak = 0;
+    let historyCheckScheduled = false;
 
     // Style source form state, filled from the server on open
     let styleSourceDefaults = { html: '/chat.html', css: '/chat.css', js: '/chat.js' };
@@ -126,6 +144,37 @@
 
     // Validated values awaiting acknowledgement; the save only runs once confirmed
     let pendingStyleSources = null;
+
+    // Right-click message actions. One menu element is reused and moved between rows
+    // instead of one per message, so the DOM does not grow with the conversation and the
+    // row under the pointer is the only state that has to be tracked.
+    let messageMenuEl = null;
+    let messageMenuTargetRow = null;
+
+    // The format popup raised by the composer's format button. It is built on first use
+    // for the same reason as the message menu: the page markup is user-supplied, so a
+    // popup read out of chat.html could be missing altogether.
+    let messageFormatMenuEl = null;
+
+    // The row currently being edited in place, if any. A second menu cannot start a
+    // second editor, so this also acts as the "one edit at a time" latch.
+    let editingRow = null;
+
+    // A touch has no right button, so the same menu is raised by a long press. The
+    // pending press is tracked here so movement, a scroll, or lifting the finger can
+    // cancel it before it fires.
+    let longPressTimer = null;
+    let longPressStart = null;
+    const LONG_PRESS_MS = 500;
+    const LONG_PRESS_SLOP = 10;
+
+    // Mobile drawer. On a narrow screen the rail covers the conversation, so it is only
+    // on screen when it was asked for. Both the toggle and the scrim are built here
+    // rather than read from the page, because a user-supplied chat.html will not contain
+    // markup added later. See ensureRailControls().
+    let railEl = null;
+    let railToggleEl = null;
+    let railScrimEl = null;
 
     // ------------------------------------------------------------ helpers ------
 
@@ -271,21 +320,176 @@
         }
     }
 
-    /** The body format currently selected in the composer. */
+    /** The body format currently selected in the composer.
+     *
+     * The trigger is a plain button, so the choice lives in storage alone; that also
+     * keeps the answer correct when a user-supplied chat.html omits the control.
+     */
     function getSelectedMessageFormat() {
-        if (messageFormatEl && MESSAGE_FORMATS.indexOf(messageFormatEl.value) !== -1) {
-            return messageFormatEl.value;
-        }
-        return 'text';
+        return readStoredMessageFormat();
     }
 
-    /** Reflects the selected format in the composer placeholder. */
+    /** The short label for a format, shown on the trigger button. */
+    function formatShortLabel(format) {
+        return format === 'markdown'
+            ? getI18nText('chat.formatMarkdown', 'M')
+            : getI18nText('chat.formatText', 'T');
+    }
+
+    /** The full name for a format, used in the popup and in the confirmation toast. */
+    function formatLongLabel(format) {
+        return format === 'markdown'
+            ? getI18nText('chat.formatMarkdownLong', 'Markdown')
+            : getI18nText('chat.formatTextLong', 'Plain text');
+    }
+
+    /**
+     * Repaints the format button's letter.
+     *
+     * The letter is written here rather than by data-i18n, and the span that holds it
+     * deliberately carries no data-i18n attribute: OxypeI18n.updateDom overwrites the
+     * text of any such node with the dictionary value, which would pin it to one letter.
+     */
+    function paintMessageFormatTrigger() {
+        if (!messageFormatEl) return;
+        const letterEl = messageFormatEl.querySelector('.composer-format-letter');
+        if (!letterEl) return;
+        const format = getSelectedMessageFormat();
+        letterEl.textContent = formatShortLabel(format);
+        // The button has no visible text of its own, so its accessible name has to say
+        // which mode is active as well as what the button does.
+        const label = `${getI18nText('chat.formatLabel', 'Message format')} (${formatLongLabel(format)})`;
+        messageFormatEl.setAttribute('aria-label', label);
+        messageFormatEl.setAttribute('title', label);
+    }
+
+    /**
+     * Builds the format popup once; later opens only relabel it and move it.
+     *
+     * The entries carry the full format names while the trigger shows a single letter,
+     * so the compact button still explains itself when opened.
+     */
+    function ensureMessageFormatMenu() {
+        if (messageFormatMenuEl) return messageFormatMenuEl;
+
+        const menu = document.createElement('div');
+        menu.className = 'message-menu composer-format-menu';
+        menu.setAttribute('role', 'menu');
+        menu.style.display = 'none';
+
+        MESSAGE_FORMATS.forEach((format) => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'message-menu-item composer-format-option';
+            item.dataset.format = format;
+            item.setAttribute('role', 'menuitemradio');
+            menu.appendChild(item);
+        });
+
+        // A click inside the popup acts on the format it names. The document-level
+        // dismisser ignores clicks that land in here, so this is the only path.
+        menu.addEventListener('click', (e) => {
+            const item = e.target && e.target.closest ? e.target.closest('.composer-format-option') : null;
+            if (!item) return;
+            applyMessageFormat(item.dataset.format);
+        });
+
+        document.body.appendChild(menu);
+        messageFormatMenuEl = menu;
+        return menu;
+    }
+
+    /**
+     * Opens the format popup above the trigger button.
+     *
+     * It is anchored to the button rather than to the pointer: the button sits at a fixed
+     * spot in the composer, so the popup has one predictable home.
+     */
+    function openMessageFormatMenu() {
+        if (!messageFormatEl) return;
+        const menu = ensureMessageFormatMenu();
+        const selected = getSelectedMessageFormat();
+
+        // Labels and the current selection are looked up on every open, so a language
+        // change or a preference change made while it was closed is reflected.
+        Array.prototype.forEach.call(
+            menu.querySelectorAll('.composer-format-option'),
+            (item) => {
+                const format = item.dataset.format;
+                item.textContent = formatLongLabel(format);
+                const isSelected = format === selected;
+                // The marker is styled from this attribute, so the check survives a
+                // theme change without a second class to keep in sync.
+                item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+                item.classList.toggle('composer-format-option-active', isSelected);
+            }
+        );
+
+        // Shown before measuring: a hidden element reports a zero rect, and the clamp
+        // below needs the real size to keep the popup inside the viewport.
+        menu.style.display = 'block';
+        menu.style.left = '0px';
+        menu.style.top = '0px';
+
+        const rect = menu.getBoundingClientRect();
+        const anchor = messageFormatEl.getBoundingClientRect();
+        const margin = 8;
+
+        // Above the button, in the composer's own direction, so the popup never covers
+        // the text being typed; below it only when there is no room above.
+        let top = anchor.top - rect.height - margin;
+        if (top < margin) {
+            const below = anchor.bottom + margin;
+            top = Math.min(below, Math.max(margin, window.innerHeight - rect.height - margin));
+        }
+
+        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+        menu.style.left = `${Math.min(Math.max(margin, anchor.left), maxLeft)}px`;
+        menu.style.top = `${Math.max(margin, top)}px`;
+
+        messageFormatEl.setAttribute('aria-expanded', 'true');
+    }
+
+    /** Hides the format popup. */
+    function closeMessageFormatMenu() {
+        if (messageFormatMenuEl) messageFormatMenuEl.style.display = 'none';
+        if (messageFormatEl) messageFormatEl.setAttribute('aria-expanded', 'false');
+    }
+
+    /** Opens the format popup when it is closed and closes it when it is open. */
+    function toggleMessageFormatMenu() {
+        if (messageFormatMenuEl && messageFormatMenuEl.style.display !== 'none') {
+            closeMessageFormatMenu();
+        } else {
+            openMessageFormatMenu();
+        }
+    }
+
+    /**
+     * Adopts a body format for the next message.
+     *
+     * The toast names the format in full, because the trigger it was chosen from shows
+     * only a letter, and the confirmation is the one place the choice is spelled out.
+     */
+    function applyMessageFormat(format) {
+        if (MESSAGE_FORMATS.indexOf(format) === -1) return;
+        writeStoredMessageFormat(format);
+        closeMessageFormatMenu();
+        paintMessageFormatTrigger();
+        updateComposerForFormat();
+        toast(formatLongLabel(format), 'success');
+    }
+
+    /**
+     * Reflects the selected format in the composer placeholder.
+     *
+     * The placeholder no longer advertises Markdown syntax, so it is the same in
+     * both modes; only the styling hook still depends on the format.
+     */
     function updateComposerForFormat() {
         if (!messageInputEl) return;
         const isMarkdown = getSelectedMessageFormat() === 'markdown';
-        const key = isMarkdown ? 'chat.inputPlaceholderMarkdown' : 'chat.inputPlaceholder';
-        const fallback = isMarkdown ? 'Markdown supported...' : 'Type a message...';
-        messageInputEl.setAttribute('placeholder', getI18nText(key, fallback));
+        messageInputEl.setAttribute('placeholder', getI18nText('chat.inputPlaceholder', 'Type a message...'));
         messageInputEl.classList.toggle('composer-input-markdown', isMarkdown);
     }
 
@@ -297,10 +501,31 @@
      */
     function autoGrowComposer() {
         if (!messageInputEl || messageInputEl.tagName !== 'TEXTAREA') return;
+
+        // Read the resting row height the stylesheet asks for, then let the box shrink
+        // to its content so scrollHeight reports the text rather than the box.
+        messageInputEl.style.height = '';
+        const rest = messageInputEl.getBoundingClientRect().height;
         messageInputEl.style.height = 'auto';
-        const next = Math.min(messageInputEl.scrollHeight, COMPOSER_MAX_HEIGHT);
+
+        // scrollHeight covers the content plus padding but never the border, while
+        // box-sizing: border-box makes the height include it. Adding the vertical
+        // borders keeps the grown box an exact fit instead of 4px short, which would
+        // otherwise show a scrollbar and drift against the format selector.
+        const content = messageInputEl.scrollHeight + composerBorders(messageInputEl);
+        // scrollHeight is rounded to whole pixels, so allow a little slack before
+        // deciding the text needs more room than one row. Within one row the resting
+        // height is kept exactly, which is what keeps the two controls aligned.
+        const next = content <= rest + 1 ? rest : Math.min(content, COMPOSER_MAX_HEIGHT);
+
         messageInputEl.style.height = `${next}px`;
-        messageInputEl.style.overflowY = messageInputEl.scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
+        messageInputEl.style.overflowY = content > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
+    }
+
+    /** Sum of an element's vertical border widths, in pixels. */
+    function composerBorders(el) {
+        const style = window.getComputedStyle(el);
+        return (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
     }
 
     /**
@@ -324,6 +549,493 @@
         return String(text === null || text === undefined ? '' : text)
             .replace(/[\r\n]+/g, ' ')
             .trim();
+    }
+
+    // ---------------------------------------------------- message actions ------
+
+    /**
+     * Whether the current viewer may change or remove this message.
+     *
+     * The server applies the same rule (the author, or a session administrator, which
+     * counts the owner), but the menu is suppressed instead of shown and then refused:
+     * offering an action whose only possible outcome is an error is worse than not
+     * offering it at all.
+     */
+    /** Whether the current viewer wrote this message. */
+    function isOwnMessage(row) {
+        if (!row) return false;
+        const myId = currentUserId();
+        return myId !== null && myId !== undefined && row.dataset.senderId === String(myId);
+    }
+
+    /**
+     * Whether the current viewer moderates this session.
+     *
+     * The server treats the owner as an administrator, so `isOwner` is folded in
+     * here rather than tested by each caller.
+     */
+    function canModerate() {
+        const info = activeSessionInfo || {};
+        return !!(info.isOwner || info.isAdmin);
+    }
+
+    /**
+     * Whether the current viewer may rewrite this message. Only its author may:
+     * moderation removes messages (see [canDeleteMessage]) rather than putting
+     * words in another member's mouth, and the server enforces that split.
+     */
+    function canEditMessage(row) {
+        return isOwnMessage(row);
+    }
+
+    /** Whether the current viewer may remove this message: its author, or a moderator. */
+    function canDeleteMessage(row) {
+        return isOwnMessage(row) || canModerate();
+    }
+
+    /**
+     * Whether the action menu should open for this row at all. The menu is
+     * suppressed instead of shown and then refused: offering an action whose only
+     * possible outcome is an error is worse than not offering it at all.
+     */
+    function canModifyMessage(row) {
+        return canEditMessage(row) || canDeleteMessage(row);
+    }
+
+    /** Builds the shared menu once; later right-clicks only relabel it and move it. */
+    function ensureMessageMenu() {
+        if (messageMenuEl) return messageMenuEl;
+
+        const menu = document.createElement('div');
+        menu.className = 'message-menu';
+        menu.setAttribute('role', 'menu');
+        menu.style.display = 'none';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'message-menu-item';
+        editBtn.dataset.action = 'edit';
+        editBtn.setAttribute('role', 'menuitem');
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'message-menu-item message-menu-danger';
+        deleteBtn.dataset.action = 'delete';
+        deleteBtn.setAttribute('role', 'menuitem');
+
+        menu.appendChild(editBtn);
+        menu.appendChild(deleteBtn);
+
+        // A click inside the menu acts on the row it was opened for. The document-level
+        // dismisser below ignores clicks that land in here, so this is the only path.
+        menu.addEventListener('click', (e) => {
+            const item = e.target && e.target.closest ? e.target.closest('.message-menu-item') : null;
+            if (!item) return;
+            const row = messageMenuTargetRow;
+            closeMessageMenu();
+            if (!row) return;
+            if (item.dataset.action === 'edit') startMessageEdit(row);
+            else if (item.dataset.action === 'delete') handleDeleteMessage(row);
+        });
+
+        document.body.appendChild(menu);
+        messageMenuEl = menu;
+        return menu;
+    }
+
+    /** Opens the action menu for a row at the pointer. */
+    function openMessageMenu(row, x, y) {
+        const menu = ensureMessageMenu();
+        messageMenuTargetRow = row;
+
+        // Labels are looked up on every open, so a language change made while the menu
+        // was closed is reflected the next time it appears.
+        const editBtn = menu.querySelector('[data-action="edit"]');
+        const deleteBtn = menu.querySelector('[data-action="delete"]');
+        if (editBtn) editBtn.textContent = getI18nText('chat.messageEditBtn', 'Edit');
+        if (deleteBtn) deleteBtn.textContent = getI18nText('chat.messageDeleteBtn', 'Delete');
+
+        // Editing is the author's alone, so a moderator looking at someone else's
+        // message gets only the delete entry.
+        if (editBtn) editBtn.style.display = canEditMessage(row) ? '' : 'none';
+        if (deleteBtn) deleteBtn.style.display = canDeleteMessage(row) ? '' : 'none';
+
+        // Shown before measuring: a hidden element reports a zero rect, and the clamp
+        // below needs the real size to keep the menu inside the viewport.
+        menu.style.display = 'block';
+        menu.style.left = '0px';
+        menu.style.top = '0px';
+        const rect = menu.getBoundingClientRect();
+        const margin = 8;
+        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+        const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+        menu.style.left = `${Math.min(Math.max(margin, x), maxLeft)}px`;
+        menu.style.top = `${Math.min(Math.max(margin, y), maxTop)}px`;
+    }
+
+    /** Hides the menu and forgets the row it pointed at. */
+    function closeMessageMenu() {
+        if (messageMenuEl) messageMenuEl.style.display = 'none';
+        messageMenuTargetRow = null;
+    }
+
+    /**
+     * Right-click handler for the message list.
+     *
+     * The row carries the server id only once it is known (history and inbound messages
+     * always, the sender's own message after the send is acknowledged), so a row without
+     * one has nothing to address and the browser's own menu is left alone.
+     */
+    function handleMessageContextMenu(e) {
+        if (!messagesContainerEl) return;
+        const row = e.target && e.target.closest ? e.target.closest('.message-row') : null;
+        if (!row || !messagesContainerEl.contains(row)) return;
+        if (!row.dataset.messageId) return;
+        if (!canModifyMessage(row)) return;
+        e.preventDefault();
+        if (editingRow === row) return;
+        // Chrome on Android already reports a long press as a context menu, so the
+        // touch timer that mirrors it on iOS has to stand down or the menu is opened
+        // twice for one press.
+        cancelLongPress();
+        openMessageMenu(row, e.clientX, e.clientY);
+    }
+
+    /**
+     * Starts the long-press timer on a message row.
+     *
+     * A touch screen has no right button, so the same menu is raised by holding a
+     * finger down. The press only counts if the finger stays roughly still: a scroll
+     * begins with a touch too, and opening a menu in the middle of one would be wrong.
+     */
+    function handleMessageTouchStart(e) {
+        if (!messagesContainerEl) return;
+        if (!e.touches || e.touches.length !== 1) return;
+        const row = e.target && e.target.closest ? e.target.closest('.message-row') : null;
+        if (!row || !messagesContainerEl.contains(row)) return;
+        cancelLongPress();
+        const touch = e.touches[0];
+        longPressStart = { x: touch.clientX, y: touch.clientY, row, x2: touch.clientX };
+        longPressTimer = window.setTimeout(() => {
+            longPressTimer = null;
+            const start = longPressStart;
+            longPressStart = null;
+            if (!start) return;
+            // The guards are re-checked here because the row may have been re-rendered
+            // or had its id removed during the press.
+            if (!start.row.isConnected || !start.row.dataset.messageId) return;
+            if (!canModifyMessage(start.row)) return;
+            if (editingRow === start.row) return;
+            openMessageMenu(start.row, start.x2, start.y);
+        }, LONG_PRESS_MS);
+    }
+
+    /** Abandons a pending long press, e.g. because the finger moved or lifted. */
+    function cancelLongPress() {
+        if (longPressTimer !== null) {
+            window.clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        longPressStart = null;
+    }
+
+    /**
+     * Tracks finger movement while it is down, and cancels the press once it travels
+     * further than a finger wobbles on the same spot.
+     */
+    function handleMessageTouchMove(e) {
+        if (!longPressStart) return;
+        if (!e.touches || e.touches.length !== 1) {
+            cancelLongPress();
+            return;
+        }
+        const touch = e.touches[0];
+        // Remember where the finger is, so a menu that fires later still appears under
+        // it rather than where the press began.
+        longPressStart.x2 = touch.clientX;
+        const dx = touch.clientX - longPressStart.x;
+        const dy = touch.clientY - longPressStart.y;
+        if (Math.hypot(dx, dy) > LONG_PRESS_SLOP) cancelLongPress();
+    }
+
+    /** Finds the row for a server message id, if it is on screen. */
+    function findMessageRow(messageId) {
+        if (!messagesContainerEl || messageId === undefined || messageId === null) return null;
+        return messagesContainerEl.querySelector(`.message-row[data-message-id="${String(messageId)}"]`);
+    }
+
+    /**
+     * Gives a server id to the optimistic row that this echo corresponds to.
+     *
+     * A message sent from another device signed in to the same account arrives
+     * here as a broadcast of our own message. The optimistic row on this screen
+     * has no id yet —the HTTP response that names it may still be in flight —so
+     * id-based de-duplication cannot see it. Matching on the exact body of an
+     * unidentified outgoing row is the only thing that ties the two together, and
+     * it keeps the transcript free of a duplicate pair.
+     *
+     * The oldest match wins. Echoes arrive in the order the server numbered the
+     * messages, and unidentified rows sit in the order they were typed, so pairing
+     * them up in the same order keeps two identical texts ("ok", "ok") from being
+     * crossed over onto each other's ids.
+     */
+    function adoptOptimisticRow(text, messageId) {
+        if (!messagesContainerEl) return false;
+        const rows = messagesContainerEl.querySelectorAll('.message-row.outgoing:not([data-message-id])');
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row.oxypeMessage || row.oxypeMessage.text !== text) continue;
+            row.dataset.messageId = String(messageId);
+            renderedMessageKeys.add(String(activeSessionId) + ':' + String(messageId));
+            return true;
+        }
+        return false;
+    }
+
+    /** Paints an "edited" marker after the clock time, keeping the original time. */
+    function markMessageEdited(row) {
+        const stampEl = row ? row.querySelector('.message-timestamp') : null;
+        if (!stampEl) return;
+        // The clean clock text is remembered on the row so re-marking an already marked
+        // message cannot end up with "12:00:05 edited edited".
+        const clock = row.dataset.clockTime !== undefined ? row.dataset.clockTime : (stampEl.textContent || '');
+        row.dataset.clockTime = clock;
+        stampEl.innerHTML = '';
+        if (clock) stampEl.appendChild(document.createTextNode(`${clock} `));
+        const mark = document.createElement('span');
+        mark.className = 'message-edited-mark';
+        mark.textContent = getI18nText('chat.messageEditedMark', 'edited');
+        stampEl.appendChild(mark);
+    }
+
+    /** Repaints a row's body from a message and flags it as edited. */
+    function applyMessageEdit(row, body) {
+        if (!row || !body) return;
+        const contentEl = row.querySelector('.message-content');
+        if (contentEl) {
+            contentEl.innerHTML = renderMessageBody(body.text, body.format);
+            contentEl.classList.toggle('message-content-markdown', body.format === 'markdown');
+        }
+        row.oxypeMessage = { text: body.text, format: body.format === 'markdown' ? 'markdown' : 'text' };
+        markMessageEdited(row);
+    }
+
+    /**
+     * Replaces a message body with a textarea plus Save and Cancel.
+     *
+     * The edit happens inside the row rather than in a dialog so the message stays in
+     * view and in context while it is being changed.
+     */
+    function startMessageEdit(row) {
+        if (!row || !row.oxypeMessage || !row.dataset.messageId) return;
+        if (editingRow === row) return;
+        // One editor at a time: a second would leave the first textarea on screen with
+        // no way to reach its Save button.
+        if (editingRow) endMessageEdit(editingRow);
+
+        const contentEl = row.querySelector('.message-content');
+        if (!contentEl) return;
+
+        editingRow = row;
+        row.classList.add('is-editing');
+        contentEl.style.display = 'none';
+
+        const editor = document.createElement('div');
+        editor.className = 'message-editor';
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'message-editor-input';
+        textarea.rows = 2;
+        textarea.value = row.oxypeMessage.text === null || row.oxypeMessage.text === undefined
+            ? ''
+            : String(row.oxypeMessage.text);
+
+        const actions = document.createElement('div');
+        actions.className = 'message-editor-actions';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'classic-btn message-editor-cancel';
+        cancelBtn.textContent = getI18nText('common.cancel', 'Cancel');
+
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.className = 'classic-btn classic-btn-primary message-editor-save';
+        saveBtn.textContent = getI18nText('common.save', 'Save');
+        // Whitespace-only text is not a message, so nothing can be saved until the
+        // content has something in it —the same bar the composer applies on send.
+        saveBtn.disabled = !textarea.value.trim();
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+        editor.appendChild(textarea);
+        editor.appendChild(actions);
+        contentEl.parentNode.insertBefore(editor, contentEl.nextSibling);
+
+        textarea.addEventListener('input', () => {
+            saveBtn.disabled = !textarea.value.trim();
+        });
+        textarea.addEventListener('keydown', (e) => {
+            // Escape has to stop here: the window-level handler would otherwise close
+            // the dialogs around the editor as well as the editor itself.
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                endMessageEdit(row);
+            } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                // Plain Enter stays a newline, since a message may be several lines.
+                e.preventDefault();
+                saveMessageEdit(row);
+            }
+        });
+        cancelBtn.addEventListener('click', () => endMessageEdit(row));
+        saveBtn.addEventListener('click', () => saveMessageEdit(row));
+
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    }
+
+    /** Tears down the in-place editor and puts the rendered body back. */
+    function endMessageEdit(row) {
+        if (!row) {
+            editingRow = null;
+            return;
+        }
+        const editor = row.querySelector('.message-editor');
+        if (editor) editor.remove();
+        const contentEl = row.querySelector('.message-content');
+        if (contentEl) contentEl.style.display = '';
+        row.classList.remove('is-editing');
+        if (editingRow === row) editingRow = null;
+    }
+
+    /**
+     * Saves an in-place edit through the server, then repaints the row from the reply.
+     *
+     * The response body is what gets rendered, not the textarea's text: the server is
+     * the only source of truth for the edited stamp, and an administrator is allowed to
+     * rewrite a message they did not write.
+     */
+    async function saveMessageEdit(row) {
+        if (!row || editingRow !== row) return;
+        const textarea = row.querySelector('.message-editor-input');
+        const saveBtn = row.querySelector('.message-editor-save');
+        const messageId = row.dataset.messageId;
+        if (!textarea || !messageId || !activeSessionId) return;
+
+        const text = textarea.value;
+        if (!text.trim()) return;
+        const format = row.oxypeMessage && row.oxypeMessage.format === 'markdown' ? 'markdown' : 'text';
+        const stored = auth();
+        const userId = currentUserId();
+
+        if (saveBtn) saveBtn.disabled = true;
+        try {
+            const res = await window.OxypeCore.editMessage(
+                activeSessionId, messageId, text, userId, stored ? stored.token : null, format
+            );
+            const edited = res && res.success === true ? res.message : null;
+            if (!edited) {
+                throw new Error(getI18nText('chat.messageEditForbidden',
+                    'Only the author can edit this message.'));
+            }
+            endMessageEdit(row);
+            applyMessageEdit(row, bodyOfMessage(edited));
+            toast(getI18nText('chat.messageEditSaved', 'Message updated.'), 'success');
+        } catch (err) {
+            console.error('[Classic] Edit message failed:', err);
+            // The editor stays open with its text so a failed request does not throw
+            // away what the user just typed.
+            if (saveBtn) saveBtn.disabled = false;
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            toast(getI18nText('chat.messageEditFailed', `Failed to edit: ${reason}`, { reason: reason }), 'error');
+        }
+    }
+
+    /**
+     * Removes a row and forgets its dedupe key.
+     *
+     * Dropping the key matters: without it a replayed history window or a late
+     * broadcast would render the deleted message again.
+     */
+    function removeMessageRow(row) {
+        if (!row) return;
+        if (editingRow === row) editingRow = null;
+        const messageId = row.dataset.messageId;
+        if (messageId) renderedMessageKeys.delete(String(activeSessionId) + ':' + String(messageId));
+        row.remove();
+        // The avatar and sender label of the following row depended on this one being
+        // part of the group, so the grouping is recomputed.
+        refreshRenderedSenderGroups();
+    }
+
+    /**
+     * Deletes a message after confirmation, then drops its row.
+     *
+     * The row goes as soon as the server agrees rather than waiting for the broadcast:
+     * the broadcast reaches this client too, but a change the user just asked for
+     * should not wait for a round trip to become visible.
+     */
+    async function handleDeleteMessage(row) {
+        if (!row || !activeSessionId) return;
+        const messageId = row.dataset.messageId;
+        if (!messageId) return;
+        const confirmMsg = getI18nText('chat.messageDeleteConfirm',
+            'Delete this message? Everyone will lose it, and this cannot be undone.');
+        if (!window.confirm(confirmMsg)) return;
+
+        const stored = auth();
+        const userId = currentUserId();
+        try {
+            const res = await window.OxypeCore.deleteMessage(
+                activeSessionId, messageId, userId, stored ? stored.token : null
+            );
+            if (!res || res.success !== true) {
+                throw new Error(getI18nText('chat.messageDeleteForbidden',
+                    'Only the author or a conversation admin can delete this message.'));
+            }
+            removeMessageRow(row);
+            // The preview may have been this very message, so ask the server which
+            // message is newest now rather than leaving a preview for something gone.
+            refreshSessionPreview(activeSessionId);
+            toast(getI18nText('chat.messageDeleted', 'Message deleted.'), 'success');
+        } catch (err) {
+            console.error('[Classic] Delete message failed:', err);
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            toast(getI18nText('chat.messageDeleteFailed', `Failed to delete: ${reason}`, { reason: reason }), 'error');
+        }
+    }
+
+    /**
+     * Applies an edit broadcast, whether it came from another member or from this
+     * client's own request.
+     */
+    function handleIncomingMessageEdit(payload) {
+        const sid = payload ? payload.sessionId : null;
+        if (sid === undefined || sid === null || String(sid) !== String(activeSessionId)) return;
+        const msg = payload.data || payload.message || {};
+        const messageId = msg.id !== undefined ? msg.id : msg.seq;
+        const row = findMessageRow(messageId);
+        if (!row) return;
+        // A row being edited here is left alone: what is in the textarea is newer than
+        // the broadcast and would otherwise be overwritten under the cursor.
+        if (editingRow === row) return;
+        applyMessageEdit(row, bodyOfMessage(msg));
+    }
+
+    /**
+     * Applies a delete broadcast, whether it came from another member or from this
+     * client's own request.
+     */
+    function handleIncomingMessageDelete(payload) {
+        const sid = payload ? payload.sessionId : null;
+        if (sid === undefined || sid === null || String(sid) !== String(activeSessionId)) return;
+        const messageId = payload.messageId !== undefined ? payload.messageId : payload.id;
+        const row = findMessageRow(messageId);
+        if (row) removeMessageRow(row);
+        // Another member's delete changes the preview just as much as one made here,
+        // and the row that vanished is not necessarily the one the preview named.
+        refreshSessionPreview(sid);
     }
 
     // --------------------------------------------------------------- init ------
@@ -403,6 +1115,9 @@
         // The security warning is built on demand rather than read from the page: a
         // user-supplied chat.html performs the save too, and such a page will not
         // contain markup added here. See buildStyleSourcesRiskDialog().
+
+        // The drawer controls are built for the same reason, on the same page.
+        ensureRailControls();
 
         // Reuse the shared language / theme / accent selectors.
         if (window.OxypeI18n && typeof window.OxypeI18n.initLanguageSelector === 'function') {
@@ -492,6 +1207,47 @@
         if (chatComposerEl) chatComposerEl.addEventListener('submit', handleSendMessage);
         if (dialogOverlayEl) dialogOverlayEl.addEventListener('click', closeAllDialogs);
 
+        // Right-click on a message row offers edit and delete for it
+        if (messagesContainerEl) {
+            messagesContainerEl.addEventListener('contextmenu', handleMessageContextMenu);
+            // A touch screen has no right button, so holding a row raises the same menu.
+            messagesContainerEl.addEventListener('touchstart', handleMessageTouchStart, { passive: true });
+            messagesContainerEl.addEventListener('touchmove', handleMessageTouchMove, { passive: true });
+            messagesContainerEl.addEventListener('touchend', cancelLongPress);
+            messagesContainerEl.addEventListener('touchcancel', cancelLongPress);
+        }
+
+        // A menu that outlived its right-click would act on the wrong row, so any click
+        // elsewhere, a scroll, or a resize closes it. The menu's own clicks are handled
+        // by its own listener and stop here. The format popup is dismissed on the same
+        // three signals: it is a transient layer, not a dialog, so it must not survive
+        // the gesture that ends the interaction.
+        document.addEventListener('click', (e) => {
+            if (messageMenuEl && messageMenuEl.style.display !== 'none'
+                && !messageMenuEl.contains(e.target)) {
+                closeMessageMenu();
+            }
+            if (messageFormatMenuEl && messageFormatMenuEl.style.display !== 'none'
+                && !messageFormatMenuEl.contains(e.target)) {
+                closeMessageFormatMenu();
+            }
+        });
+        if (messagesContainerEl) {
+            messagesContainerEl.addEventListener('scroll', closeMessageMenu);
+            // Paging rides on the scroll event rather than an IntersectionObserver: the
+            // trigger is a distance from the top of the transcript, not the visibility
+            // of any one element, and a spliced page changes that distance by itself.
+            messagesContainerEl.addEventListener('scroll', scheduleHistoryCheck);
+        }
+        window.addEventListener('resize', () => {
+            closeMessageMenu();
+            closeMessageFormatMenu();
+            // A drawer left open while the window grew would stay in the tree as an
+            // off-canvas element covering the two-pane layout, so it is dismissed as
+            // soon as the rail can be shown in place.
+            if (window.innerWidth > 720) setRailOpen(false);
+        });
+
         if (messageInputEl) {
             // Enter sends and Shift+Enter inserts a newline, matching the usual chat
             // gesture now that the composer is multi-line. A textarea does not submit
@@ -510,22 +1266,148 @@
         }
 
         if (messageFormatEl) {
-            messageFormatEl.value = readStoredMessageFormat();
-            messageFormatEl.addEventListener('change', () => {
-                writeStoredMessageFormat(messageFormatEl.value);
-                // The placeholder is the only affordance explaining the mode.
-                updateComposerForFormat();
+            messageFormatEl.addEventListener('click', (e) => {
+                // The document-level dismisser would otherwise close the popup in the
+                // same tick it was opened.
+                e.stopPropagation();
+                toggleMessageFormatMenu();
             });
+            // The letter and the placeholder both derive from the stored preference, so
+            // one repaint covers them.
+            paintMessageFormatTrigger();
             updateComposerForFormat();
 
-            // The placeholder is set from the dictionary rather than by data-i18n, since
-            // it depends on which format is selected, so it is refreshed by hand.
-            window.addEventListener('oxype:languageChanged', updateComposerForFormat);
+            // Neither the letter nor the placeholder can come from data-i18n, since both
+            // depend on the selected format, so they are refreshed by hand.
+            window.addEventListener('oxype:languageChanged', () => {
+                paintMessageFormatTrigger();
+                updateComposerForFormat();
+            });
         }
 
         window.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeAllDialogs();
+            if (e.key === 'Escape') {
+                // The open drawer is the outermost layer on a phone, so Escape unwinds
+                // one layer at a time: a dialog opened from the drawer closes first and
+                // leaves the drawer behind it. The format popup is the innermost layer,
+                // so it closes before anything else and swallows the key.
+                if (messageFormatMenuEl && messageFormatMenuEl.style.display !== 'none') {
+                    closeMessageFormatMenu();
+                    if (messageFormatEl) messageFormatEl.focus();
+                    return;
+                }
+                if (isDialogOpen()) {
+                    closeAllDialogs();
+                } else {
+                    setRailOpen(false);
+                }
+            }
         });
+
+        // The drawer button is created by this script, so it is relabelled here rather
+        // than by data-i18n.
+        window.addEventListener('oxype:languageChanged', labelRailToggle);
+    }
+
+    /**
+     * Build the mobile drawer controls and bind them.
+     *
+     * The markup is expected to hold the rail, but nothing else: the toggle button
+     * belongs in the conversation header and the scrim has to sit next to the rail
+     * inside the frameset. Both are created here so a custom chat.html still gets a
+     * working drawer instead of a rail that can never be reopened.
+     */
+    function ensureRailControls() {
+        railEl = document.querySelector('.classic-rail');
+        if (!railEl) return;
+
+        const frameset = railEl.parentElement;
+        if (!frameset) return;
+
+        railToggleEl = document.getElementById('railToggle');
+        if (!railToggleEl) {
+            const header = document.querySelector('.classic-main-header');
+            if (header) {
+                railToggleEl = document.createElement('button');
+                railToggleEl.type = 'button';
+                railToggleEl.id = 'railToggle';
+                railToggleEl.className = 'classic-rail-toggle';
+                railToggleEl.innerHTML =
+                    '<svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none"'
+                    + ' stroke="currentColor" stroke-width="2" stroke-linecap="round"'
+                    + ' stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line>'
+                    + '<line x1="3" y1="12" x2="21" y2="12"></line>'
+                    + '<line x1="3" y1="18" x2="21" y2="18"></line></svg>';
+                // Placed first in the header so it sits at the leading edge, before the
+                // conversation title, which is where a drawer button is expected.
+                header.insertBefore(railToggleEl, header.firstChild);
+            }
+        }
+
+        railScrimEl = document.getElementById('railScrim');
+        if (!railScrimEl) {
+            railScrimEl = document.createElement('div');
+            railScrimEl.id = 'railScrim';
+            railScrimEl.className = 'classic-rail-scrim';
+            frameset.insertBefore(railScrimEl, railEl.nextSibling);
+        }
+
+        if (railToggleEl) {
+            railToggleEl.addEventListener('click', () => setRailOpen(!isRailOpen()));
+        }
+        if (railScrimEl) {
+            railScrimEl.addEventListener('click', () => setRailOpen(false));
+        }
+
+        labelRailToggle();
+    }
+
+    /** True while the mobile drawer is on screen. */
+    function isRailOpen() {
+        return !!railEl && railEl.classList.contains('is-open');
+    }
+
+    /**
+     * Slides the mobile drawer in or out.
+     *
+     * Only the state class is tracked here: the tab order and the accessibility tree
+     * follow from the `visibility` the stylesheet pairs with it, so the drawer is not
+     * focusable while it is off screen. On a wide screen none of that applies and the
+     * class is inert.
+     */
+    function setRailOpen(open) {
+        if (!railEl) return;
+        railEl.classList.toggle('is-open', open);
+        if (railScrimEl) {
+            railScrimEl.classList.toggle('is-visible', open);
+        }
+        if (railToggleEl) {
+            railToggleEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+    }
+
+    /** Localized label for the drawer button, refreshed on a language change. */
+    function labelRailToggle() {
+        if (!railToggleEl) return;
+        const label = getI18nText('chat.sessionsTitle', 'Conversations');
+        railToggleEl.setAttribute('aria-label', label);
+        railToggleEl.setAttribute('title', label);
+        railToggleEl.setAttribute('aria-expanded', isRailOpen() ? 'true' : 'false');
+    }
+
+    /**
+     * True while any toast dialog is on screen.
+     *
+     * Escape has to unwind one layer at a time: closing everything at once would also
+     * dismiss the mobile drawer underneath a dialog that was opened from it.
+     */
+    function isDialogOpen() {
+        const dialogs = [
+            sessionOptionsDialogEl, sessionSettingsDialogEl, membersDialogEl,
+            memberManageDialogEl, settingsDialogEl, styleSourcesDialogEl,
+            styleSourcesRiskDialogEl
+        ];
+        return dialogs.some((dialog) => dialog && dialog.style.display !== 'none');
     }
 
     // ----------------------------------------------------------- dialogs -------
@@ -548,6 +1430,11 @@
         pendingStyleSources = null;
         if (styleSourcesRiskCheckboxEl) styleSourcesRiskCheckboxEl.checked = false;
         syncStyleSourcesRiskConfirmState();
+
+        // Escape and overlay clicks are also what dismisses the message menu, so the
+        // editor it may have opened goes with it rather than being left orphaned.
+        closeMessageMenu();
+        if (editingRow) endMessageEdit(editingRow);
     }
 
     function openSessionOptionsDialog() {
@@ -1225,6 +2112,43 @@
         moveSessionToTop(activeSessionId, timestamp);
     }
 
+    /**
+     * Re-reads a conversation's preview from the server.
+     *
+     * Removing the message a preview was built from leaves the line naming a message
+     * that no longer exists, and the replacement cannot be guessed locally: the server
+     * knows which message is newest now, including ones that arrived from someone else
+     * and were never rendered here. A blank answer is a real one and is written through.
+     */
+    function refreshSessionPreview(sessionId) {
+        if (sessionId === undefined || sessionId === null || !sessionListEl) return;
+        const sId = String(sessionId);
+        const stored = auth();
+        const inFlight = previewRefreshes.get(sId);
+        if (inFlight) return inFlight;
+        const pending = window.OxypeCore.getLastMessage(sId, currentUserId(), stored ? stored.token : null)
+            .then(lastMsg => {
+                const item = sessionListEl.querySelector(`[data-session-id="${sId}"]`);
+                const previewEl = item ? item.querySelector('.session-last-message') : null;
+                if (!previewEl) return;
+                if (lastMsg && lastMsg.hasMessage && (lastMsg.content || lastMsg.senderName)) {
+                    previewEl.textContent = `${lastMsg.senderName || 'User'}: ${lastMsg.content || ''}`;
+                } else {
+                    previewEl.textContent = '';
+                }
+            })
+            .catch(err => {
+                console.warn(`[Classic] refresh preview/${sId} failed:`, err.message);
+            })
+            .finally(() => {
+                // Released so the next delete can ask again; a failed lookup must not
+                // freeze the conversation on a preview for a message that is gone.
+                previewRefreshes.delete(sId);
+            });
+        previewRefreshes.set(sId, pending);
+        return pending;
+    }
+
     // -------------------------------------------------------------- session ----
 
     /** Loads a conversation's history, roster and metadata, then renders it. */
@@ -1252,26 +2176,92 @@
         });
     }
 
-    /** Resolve a fallback User #id sender once, then repaint all matching rows. */
-    function resolveFallbackSender(senderId) {
+    /**
+     * Obtain a real username for a sender currently shown as `User #<id>`.
+     *
+     * A sender can be missing from `activeSessionUsers` for a reason that has nothing
+     * to do with the server: the roster is fetched once, when the conversation is
+     * selected, so anyone who joined afterwards is unknown until the page is reloaded.
+     * The profile route is therefore consulted here rather than the roster.
+     *
+     * The outcome is deliberately *not* cached when the request fails. A sender that
+     * could not be named must stay retryable, otherwise one dropped request would pin
+     * that person to their numeric placeholder for the rest of the page's lifetime.
+     * Only a successful lookup is remembered, both to avoid repeat traffic and because
+     * a resolved name never needs asking for again.
+     */
+    function resolveFallbackSender(senderId, options) {
         if (senderId === null || senderId === undefined || senderId === ''
             || !window.OxypeCore || typeof window.OxypeCore.getUser !== 'function') return;
         const id = String(senderId);
-        if (senderProfilePromises.has(id)) return;
-        const promise = Promise.resolve(window.OxypeCore.getUser(senderId))
+        // One in-flight request per id is enough; concurrent rows share its result.
+        // Callers that are sweeping for placeholders pass `force` so that a sender whose
+        // earlier lookup already came back empty is asked for again.
+        if (!(options && options.force) && senderProfilePromises.has(id)) return;
+        const promise = Promise.resolve()
+            .then(() => window.OxypeCore.getUser(senderId))
             .then(profile => {
                 const username = profile && (profile.username || profile.name);
-                if (!username) return;
+                if (!username) {
+                    console.warn(`[Classic] getUser/${senderId} returned no username`, profile);
+                    return;
+                }
                 activeSessionUsers.set(id, username);
-                if (!messagesContainerEl) return;
-                messagesContainerEl.querySelectorAll('.message-row').forEach(row => {
-                    if (row.dataset.senderId === id) row.dataset.senderName = username;
-                });
-                refreshRenderedSenderGroups();
+                repaintSenderName(id, username);
             })
-            .catch(err => console.warn(`[Classic] getUser/${senderId} skipped:`, err.message))
-            .finally(() => senderProfilePromises.set(id, Promise.resolve()));
+            .catch(err => console.warn(`[Classic] getUser/${senderId} skipped:`, err && err.message))
+            .finally(() => {
+                // Only drop the entry this promise owns, so a forced retry is not
+                // cancelled by the completion of the request it replaced.
+                if (senderProfilePromises.get(id) === promise) senderProfilePromises.delete(id);
+            });
         senderProfilePromises.set(id, promise);
+    }
+
+    /**
+     * Ask for a username for every row currently showing a `User #<id>` placeholder.
+     *
+     * Rows can end up unnamed without their render path ever calling the resolver — a
+     * message can arrive while the roster is still loading, or a lookup can fail once
+     * and be forgotten. Sweeping the DOM is cheap and makes the placeholder state
+     * self-healing rather than depending on each call site being reached exactly once.
+     */
+    function resolveRenderedPlaceholderSenders(options) {
+        if (!messagesContainerEl) return;
+        const ids = new Set();
+        messagesContainerEl.querySelectorAll('.message-row').forEach(row => {
+            const name = row.dataset.senderName || '';
+            const id = row.dataset.senderId;
+            if (id && /^User #\d+$/.test(name)) ids.add(id);
+        });
+        ids.forEach(id => resolveFallbackSender(id, options));
+    }
+
+    /**
+     * Rewrite every row already on screen that belongs to one sender.
+     *
+     * Rows are patched in place rather than re-rendered so the transcript keeps its
+     * scroll position, and any message being edited keeps its editor open.
+     */
+    function repaintSenderName(senderId, username) {
+        const id = String(senderId);
+        if (!username || !messagesContainerEl) return;
+        messagesContainerEl.querySelectorAll('.message-row').forEach(row => {
+            if (row.dataset.senderId === id) row.dataset.senderName = username;
+        });
+        refreshRenderedSenderGroups();
+        // The rail preview is plain text ("Name: excerpt"), so the stale name has to be
+        // swapped out there too or the list keeps showing the placeholder.
+        if (sessionListEl) {
+            const item = sessionListEl.querySelector(`[data-session-id="${activeSessionId}"]`);
+            const previewEl = item ? item.querySelector('.session-last-message') : null;
+            if (previewEl) {
+                const stale = `User #${id}: `;
+                if (previewEl.textContent.startsWith(stale)) {
+                    previewEl.textContent = username + ': ' + previewEl.textContent.slice(stale.length);
+                }
+            }
+        }
     }
 
     function bindWebSocketMessages() {
@@ -1280,7 +2270,18 @@
         window.addEventListener('oxype:websocket:message', event => {
             let payload = event && event.detail ? event.detail.data : null;
             if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch (e) { return; } }
-            if (!payload || payload.type !== 'message') return;
+            if (!payload) return;
+            // Edits and deletes are checked before the "message" guard below: they carry
+            // their own types and would otherwise be dropped as unrelated traffic.
+            if (payload.type === 'messageEdited') {
+                handleIncomingMessageEdit(payload);
+                return;
+            }
+            if (payload.type === 'messageDeleted') {
+                handleIncomingMessageDelete(payload);
+                return;
+            }
+            if (payload.type !== 'message') return;
             const sid = payload.sessionId !== undefined ? payload.sessionId : payload.session_id;
             if (sid == null || activeSessionId == null || String(sid) !== String(activeSessionId)) return;
             if (historyLoadingSessionId === String(sid)) {
@@ -1293,16 +2294,21 @@
             const id = msg.id !== undefined ? msg.id : msg.seq;
             const key = String(sid) + ':' + (id !== undefined ? String(id) : JSON.stringify(msg));
             if (renderedMessageKeys.has(key)) return;
-            renderedMessageKeys.add(key);
             const body = bodyOfMessage(msg);
             if (!body.text) return;
             const senderId = msg.sender !== undefined ? msg.sender : msg.userid;
             const uid = currentUser ? currentUser.id : null;
             const self = uid != null && senderId != null && String(uid) === String(senderId);
+            // This same account signed in on another device receives the echo of a
+            // message that device sent. If that row is already on screen as an
+            // optimistic send still waiting to be named, the echo *is* the naming:
+            // adopt it instead of appending the message a second time.
+            if (self && id !== undefined && adoptOptimisticRow(body.text, id)) return;
+            renderedMessageKeys.add(key);
             const sender = self ? ((currentUser && currentUser.username) || 'Me') : (activeSessionUsers.get(String(senderId)) || ('User #' + senderId));
             const stamp = Number(msg.timestamp) || Date.now();
             const hint = document.getElementById('emptyConversationHint'); if (hint) hint.remove();
-            appendMessage({ text: body.text, format: body.format, sender: sender, senderId: senderId, isSelf: self, timestamp: formatClockTime(stamp), timestampMs: stamp });
+            appendMessage({ text: body.text, format: body.format, sender: sender, senderId: senderId, isSelf: self, timestamp: formatClockTime(stamp), timestampMs: stamp, messageId: id, editedAt: msg.editedAt ? Number(msg.editedAt) : 0 });
             if (!self && /^User #\d+$/.test(sender)) resolveFallbackSender(senderId);
             updateActiveSessionPreview(sender, previewOfBody(body.text), stamp);
         });
@@ -1310,6 +2316,13 @@
 
     async function selectSession(sessionId) {
         if (window.OxypeWebSocket && window.OxypeWebSocket.subscribe) window.OxypeWebSocket.subscribe(sessionId);
+        // The menu and any open editor belong to the conversation being left, so they
+        // are dropped before the message list is rebuilt.
+        closeMessageMenu();
+        if (editingRow) endMessageEdit(editingRow);
+        // Choosing a conversation is the navigation that ends a visit to the list, so
+        // the mobile drawer closes behind it and reveals the transcript.
+        setRailOpen(false);
         renderedMessageKeys.clear();
         activeSessionId = sessionId;
         historyLoadingSessionId = String(sessionId);
@@ -1348,6 +2361,10 @@
         // Rebuild the transcript from scratch, including its date separators.
         if (messagesContainerEl) messagesContainerEl.innerHTML = '';
         lastRenderedDateKey = '';
+        historyOldestSeq = null;
+        historyReachedTop = false;
+        historyPageInFlight = false;
+        historyEmptyPageStreak = 0;
 
         // Roster, so sender ids can be resolved to names.
         activeSessionUsers.clear();
@@ -1369,54 +2386,63 @@
             const seq = await window.OxypeCore.getReceivedMessageSeq(userId, sessionId, stored ? stored.token : null);
             currentSeq = Number(seq) || 0;
 
-            const start = (currentSeq - 50 > 0) ? (currentSeq - 50) : 0;
-            const end = currentSeq + 50;
+            // The transcript opens on the *newest* messages, not on the read marker.
+            //
+            // Anchoring the window on the marker hid two separate things behind one
+            // symptom. A reader with unread messages never saw them, because the window
+            // stopped at the marker; and once the marker was low enough the window's
+            // start collapsed onto sequence 0, which made `historyReachedTop` true on
+            // first render, so scrolling up could never page anything in. The marker is
+            // still read (and still advances server-side), but it no longer decides what
+            // the first window contains.
+            //
+            // `lastMessage` reports the newest *surviving* sequence, which is what the
+            // transcript's bottom edge should be; it walks backwards past any deleted
+            // tail rather than trusting the high-water mark.
+            let newestSeq = currentSeq;
+            try {
+                const lastMsg = await window.OxypeCore.getLastMessage(sessionId, userId, stored ? stored.token : null);
+                const lastId = (lastMsg && lastMsg.hasMessage) ? Number(lastMsg.id) : 0;
+                if (Number.isFinite(lastId) && lastId > newestSeq) {
+                    newestSeq = lastId;
+                }
+            } catch (e) {
+                console.warn(`[Classic] lastMessage/${sessionId} skipped while anchoring history:`, e.message);
+            }
+
+            const end = newestSeq > 0 ? newestSeq : 0;
+            const start = Math.max(0, end - HISTORY_PAGE_SIZE);
 
             const messages = await window.OxypeCore.getMessages(sessionId, start, end, userId, stored ? stored.token : null);
 
             if (Array.isArray(messages) && messages.length > 0) {
                 if (messagesContainerEl) messagesContainerEl.innerHTML = '';
-                messages.forEach(msg => {
-                    const body = bodyOfMessage(msg);
-                    if (!body.text) return;
-                    const historyId = msg.id !== undefined ? msg.id : msg.seq;
-                    if (historyId !== undefined) renderedMessageKeys.add(String(activeSessionId) + ':' + String(historyId));
-
-                    const senderId = (msg.sender !== undefined && msg.sender !== null) ? msg.sender : msg.userid;
-                    const isSelf = Boolean(userId !== null && userId !== undefined && senderId !== null
-                        && senderId !== undefined && String(senderId) === String(userId));
-                    const senderName = isSelf
-                        ? (currentUser && currentUser.username ? currentUser.username : 'Me')
-                        : (activeSessionUsers.get(String(senderId))
-                            || (senderId !== null && senderId !== undefined ? `User #${senderId}` : 'User'));
-
-                    const timestampMs = (msg.timestamp !== undefined && msg.timestamp !== null)
-                        ? Number(msg.timestamp)
-                        : 0;
-
-                    appendMessage({
-                        text: body.text,
-                        format: body.format,
-                        sender: senderName,
-                        senderId,
-                        isSelf,
-                        timestamp: formatClockTime(timestampMs),
-                        timestampMs
-                    });
-                    if (!isSelf && /^User #\d+$/.test(senderName)) resolveFallbackSender(senderId);
-                });
+                appendHistoryBatch(messages);
             } else {
                 showEmptyConversationHint();
             }
+
+            // Older pages continue downwards from the lowest sequence asked for, which is
+            // the whole span rather than what came back: a deleted stretch returns fewer
+            // messages than it covers.
+            historyOldestSeq = start;
+            historyReachedTop = start <= 1;
+            historyEmptyPageStreak = 0;
         } catch (err) {
             console.warn('[Classic] Failed to load message history:', err);
             showEmptyConversationHint();
+            historyOldestSeq = null;
         }
 
         historyLoadingSessionId = null;
         const queued = pendingRealtimeMessages.get(String(activeSessionId)) || [];
         pendingRealtimeMessages.delete(String(activeSessionId));
         queued.forEach(event => window.dispatchEvent(new CustomEvent('oxype:websocket:message', { detail: event })));
+
+        // Anything still showing a numeric placeholder gets one authoritative lookup now
+        // that the transcript has stopped growing, so a name missed by the render loop
+        // or by a replayed realtime event is corrected instead of being left behind.
+        resolveRenderedPlaceholderSenders();
 
         if (messageInputEl) messageInputEl.focus();
     }
@@ -1427,6 +2453,9 @@
         if (sendMessageBtnEl) sendMessageBtnEl.disabled = !enabled;
         // The format belongs to the composer, so it is inert until a conversation is.
         if (messageFormatEl) messageFormatEl.disabled = !enabled;
+        // A popup left open over a disabled composer would still be clickable, since its
+        // entries are not the disabled control.
+        if (!enabled) closeMessageFormatMenu();
     }
 
     /** Paints the active conversation's title and subtitle. */
@@ -1467,10 +2496,13 @@
         messagesContainerEl.appendChild(splash);
     }
 
-    /** Appends the date separator for a newly crossed calendar day. */
-    function appendDateSeparator(timestamp) {
-        if (!messagesContainerEl) return;
-
+    /**
+     * Builds the date separator for one calendar day, without attaching it.
+     *
+     * Detached so it can be placed beside rows that are themselves not yet in the
+     * document — a page of older messages is assembled off-screen and inserted as one.
+     */
+    function createDateSeparator(timestamp) {
         const row = document.createElement('div');
         row.className = 'message-date-separator';
 
@@ -1483,33 +2515,66 @@
 
         row.appendChild(label);
         row.appendChild(line);
-        messagesContainerEl.appendChild(row);
+        return row;
+    }
+
+    /** Appends the date separator for a newly crossed calendar day. */
+    function appendDateSeparator(timestamp) {
+        if (!messagesContainerEl) return;
+        messagesContainerEl.appendChild(createDateSeparator(timestamp));
     }
 
     /**
-     * Appends one message bubble.
+     * Re-derives every date separator from the rows that are actually present.
      *
-     * The date label above the first message of a new day is taken from that
-     * message's own timestamp, so the separator always describes what follows it.
-     *
-     * @param {{text: string, sender: string, isSelf: boolean, timestamp: string, timestampMs?: number}} msg
+     * A page of older messages can begin a day of its own, and it can also continue the
+     * day the previously first message began. Because the day of the last rendered
+     * message is tracked in one direction only, that boundary cannot be decided by
+     * appending — so the separators are rebuilt from each row's own timestamp instead.
      */
-    function appendMessage(msg) {
+    function normalizeDateSeparators() {
         if (!messagesContainerEl) return;
+        const children = Array.prototype.slice.call(messagesContainerEl.children);
+        children.forEach(child => {
+            if (child.classList.contains('message-date-separator')) messagesContainerEl.removeChild(child);
+        });
 
-        const key = dateKeyOf(msg.timestampMs);
-        if (key && key !== lastRenderedDateKey) {
-            appendDateSeparator(msg.timestampMs);
-            lastRenderedDateKey = key;
-        }
+        lastRenderedDateKey = '';
+        const items = [];
+        let previousKey = '';
+        Array.prototype.slice.call(messagesContainerEl.children).forEach(child => {
+            if (!child.classList.contains('message-row')) return;
+            const timestampMs = Number(child.dataset.timestampMs);
+            const key = dateKeyOf(timestampMs);
+            if (key && key !== previousKey) items.push({ beforeRow: child, key, timestampMs });
+            previousKey = key || previousKey;
+        });
+        items.forEach(item => {
+            messagesContainerEl.insertBefore(createDateSeparator(item.timestampMs), item.beforeRow);
+            lastRenderedDateKey = item.key;
+        });
+    }
 
+    /**
+     * Builds one message row, without attaching it.
+     *
+     * Detached because a page of older messages is assembled in a fragment and inserted
+     * in one operation; building it in the document would let the reader see the
+     * transcript rebuild row by row.
+     *
+     * @param {object} msg view model, as documented on appendMessage
+     * @param {Element|null} previousElement the element the row will follow, so a
+     *        consecutive run by the same sender keeps its avatar on its last row only
+     * @returns {HTMLElement}
+     */
+    function createMessageRow(msg, previousElement) {
         const row = document.createElement('div');
         row.className = `message-row ${msg.isSelf ? 'outgoing' : 'incoming'}`;
 
         const senderName = msg.sender || 'User';
         const senderKey = `${msg.isSelf ? 'self' : 'other'}:${senderName}`;
-        const previousElement = messagesContainerEl.lastElementChild;
-        const previousSenderKey = previousElement && previousElement.classList.contains('message-row')
+        const previousSenderKey = previousElement && previousElement.classList
+            && previousElement.classList.contains('message-row')
             ? previousElement.dataset.senderKey
             : null;
         const continuesGroup = previousSenderKey === senderKey;
@@ -1524,6 +2589,18 @@
         row.dataset.senderKey = senderKey;
         if (msg.senderId !== undefined && msg.senderId !== null) row.dataset.senderId = String(msg.senderId);
         row.dataset.senderName = senderName;
+        // The server id is what edit and delete address, so it lives on the row rather
+        // than in a side table that would have to be kept in step with the DOM.
+        if (msg.messageId !== undefined && msg.messageId !== null) row.dataset.messageId = String(msg.messageId);
+        // The message's own time is what a spliced page is re-grouped by: the date labels
+        // are re-derived from it, and it survives any amount of reordering.
+        if (msg.timestampMs !== undefined && msg.timestampMs !== null) {
+            row.dataset.timestampMs = String(msg.timestampMs);
+        }
+        // The raw source of a message is not recoverable from its rendered bubble (a
+        // markdown body is already HTML by the time it lands), so the editor seeds its
+        // textarea from this copy instead of parsing the DOM back into text.
+        row.oxypeMessage = { text: msg.text, format: msg.format === 'markdown' ? 'markdown' : 'text' };
         row.innerHTML = `
             <div class="message-avatar" aria-hidden="true">${escapeHtml(avatarChar)}</div>
             <div class="message-bubble">
@@ -1532,10 +2609,266 @@
                 <div class="message-timestamp">${escapeHtml(msg.timestamp)}</div>
             </div>
         `;
+        return row;
+    }
 
+    /**
+     * Appends one message bubble.
+     *
+     * The date label above the first message of a new day is taken from that
+     * message's own timestamp, so the separator always describes what follows it.
+     *
+     * @param {{text: string, format?: 'text'|'markdown', sender: string, senderId?: number|string,
+     *          isSelf: boolean, timestamp: string, timestampMs?: number, messageId?: number|string,
+     *          stickToBottom?: boolean}} msg `stickToBottom` is false when a page of older
+     *          messages is being added above the reader, whose position must not move.
+     * @returns {HTMLElement|null} the row that was appended, so a caller that only learns
+     *          the server id afterwards can still attach it.
+     */
+    function appendMessage(msg) {
+        if (!messagesContainerEl) return null;
+
+        const key = dateKeyOf(msg.timestampMs);
+        if (key && key !== lastRenderedDateKey) {
+            appendDateSeparator(msg.timestampMs);
+            lastRenderedDateKey = key;
+        }
+
+        const row = createMessageRow(msg, messagesContainerEl.lastElementChild);
         messagesContainerEl.appendChild(row);
+        // History carries the edit stamp, so a message edited before the page was
+        // reloaded still says so; without this only live edits were ever marked.
+        if (msg.editedAt) markMessageEdited(row);
+        if (msg.stickToBottom !== false) messagesContainerEl.scrollTop = messagesContainerEl.scrollHeight;
+        return row;
+    }
+
+    // ------------------------------------------------------------ paging -------
+
+    /**
+     * Converts a server record into the view model appendMessage expects.
+     *
+     * @param {object} msg record from getMessages
+     * @returns {object|null} null when the message has no renderable body
+     */
+    function historyMessageToViewModel(msg) {
+        if (!msg) return null;
+        const body = bodyOfMessage(msg);
+        if (!body.text) return null;
+
+        const senderId = msg.sender !== undefined && msg.sender !== null ? msg.sender : msg.userid;
+        const isSelf = String(senderId) === String(currentUserId());
+        let senderName;
+        if (isSelf) {
+            senderName = currentUser && currentUser.username ? currentUser.username : 'Me';
+        } else {
+            const known = activeSessionUsers.get(String(senderId));
+            senderName = known || `User #${senderId}`;
+        }
+        const timestampMs = Number(msg.timestamp) || 0;
+        return {
+            text: body.text,
+            format: body.format,
+            sender: senderName,
+            senderId,
+            isSelf,
+            timestamp: timestampMs ? formatClockTime(timestampMs) : '',
+            timestampMs,
+            messageId: msg.id,
+            editedAt: Number(msg.editedAt) || 0,
+            stickToBottom: false
+        };
+    }
+
+    /** Builds detached rows for a page, skipping anything already on screen. */
+    function buildHistoryRows(messages) {
+        const rows = [];
+        const sessionKey = String(activeSessionId);
+        messages.forEach(msg => {
+            const view = historyMessageToViewModel(msg);
+            if (!view) return;
+            const dedupeKey = `${sessionKey}:${String(view.messageId)}`;
+            if (renderedMessageKeys.has(dedupeKey)) return;
+            renderedMessageKeys.add(dedupeKey);
+            rows.push(createMessageRow(view, null));
+        });
+        return rows;
+    }
+
+    /** Appends a whole page below what is already there, then settles the layout. */
+    function appendHistoryBatch(messages) {
+        if (!messagesContainerEl) return;
+        const rows = buildHistoryRows(messages);
+        if (!rows.length) return;
+        const fragment = document.createDocumentFragment();
+        rows.forEach(row => fragment.appendChild(row));
+        messagesContainerEl.appendChild(fragment);
+        normalizeDateSeparators();
+        refreshRenderedSenderGroups();
         messagesContainerEl.scrollTop = messagesContainerEl.scrollHeight;
     }
+
+    /**
+     * Inserts a page above what is already there, holding the reader's place.
+     *
+     * Adding rows above the viewport pushes everything down, so a reader sitting on the
+     * top of the loaded transcript would jump by the height of the new page. The scroll
+     * offset is advanced by the same amount, measured against a row that was already
+     * there rather than against the scroll height.
+     *
+     * @param {HTMLElement[]} rows detached rows in ascending order
+     */
+    function prependHistoryRows(rows) {
+        if (!messagesContainerEl || rows.length === 0) return;
+        // A surviving row measures the shift far more exactly than the scroll height: the
+        // height is rounded to whole pixels, and one page of this skin's rows rarely adds
+        // up to a round number, so deriving the shift from it leaves the reader up to a
+        // pixel and a half off. A row's own offset is not rounded.
+        //
+        // The shift is applied as a residual rather than as a single guess, because the
+        // browser keeps a scroll anchor of its own and may move the offset while the rows
+        // are being inserted: what is left to correct can be smaller than the height that
+        // was added, and applying the full height on top of the browser's own correction
+        // would overshoot. Re-measuring after each pass converges on the right position.
+        //
+        // This has to happen here and not after the sender regrouping that follows: that
+        // regrouping hides avatars and names, and re-measuring after it double-counts the
+        // browser's own asynchronous adjustment. Deferring it was measured to leave the
+        // reader a whole row (-19px) adrift instead of a sub-pixel residue.
+        const previousHeight = messagesContainerEl.scrollHeight;
+        const previousTop = messagesContainerEl.scrollTop;
+        const anchor = messagesContainerEl.querySelector('.message-row');
+        const anchorTopBefore = anchor ? anchor.getBoundingClientRect().top : 0;
+        const fragment = document.createDocumentFragment();
+        rows.forEach(row => fragment.appendChild(row));
+        messagesContainerEl.insertBefore(fragment, messagesContainerEl.firstChild);
+        // The page brings messages of its own days, and it may or may not end the day
+        // the previously first message began, so separators are re-derived.
+        normalizeDateSeparators();
+        if (anchor) {
+            for (let pass = 0; pass < 3; pass += 1) {
+                const drift = anchor.getBoundingClientRect().top - anchorTopBefore;
+                if (Math.abs(drift) < 0.5) break;
+                messagesContainerEl.scrollTop += drift;
+            }
+        } else {
+            const addedHeight = messagesContainerEl.scrollHeight - previousHeight;
+            if (addedHeight > 0) messagesContainerEl.scrollTop = previousTop + addedHeight;
+        }
+    }
+
+    /**
+     * Whether the reader has scrolled all the way up to the oldest message on screen.
+     *
+     * Paging is triggered only from there, so a page is fetched when the transcript has
+     * actually run out rather than partway through it. The previous rule asked one page
+     * early, which needed a scroll position to be measured against a message count and
+     * silently stopped firing once that arithmetic drifted from the real layout.
+     *
+     * The oldest row sits below the container's top padding, so its content offset is
+     * positive and the comparison uses it directly instead of a pixel constant.
+     *
+     * @returns {boolean}
+     */
+    function hasReachedHistoryTop() {
+        if (!messagesContainerEl) return false;
+        const first = messagesContainerEl.querySelector('.message-row');
+        if (!first) return true;
+
+        const containerTop = messagesContainerEl.getBoundingClientRect().top;
+        const firstTopInContent = first.getBoundingClientRect().top - containerTop + messagesContainerEl.scrollTop;
+        // Browsers clamp scrollTop at 0, so a hard overscroll lands exactly on the oldest
+        // row; the slack only absorbs sub-pixel row heights.
+        return messagesContainerEl.scrollTop <= firstTopInContent + 1;
+    }
+
+    /**
+     * Runs the paging check once per frame at most.
+     *
+     * A scroll gesture fires many events and each one is a chance to start a page. The
+     * in-flight flag makes a second request harmless, but coalescing keeps the work off
+     * the scroll handler itself.
+     */
+    function scheduleHistoryCheck() {
+        if (historyCheckScheduled) return;
+        if (historyReachedTop || historyPageInFlight || historyOldestSeq === null) return;
+        historyCheckScheduled = true;
+        const run = () => {
+            historyCheckScheduled = false;
+            if (historyReachedTop || historyPageInFlight || historyOldestSeq === null) return;
+            if (!hasReachedHistoryTop()) return;
+            loadOlderMessages();
+        };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+        else setTimeout(run, 16);
+    }
+
+    /**
+     * Fetches the page above the oldest loaded message and splices it in.
+     *
+     * Pages step down from the oldest sequence that was asked for, not from the oldest
+     * row that came back: a deleted range returns fewer messages than it spans, and
+     * stepping by "what came back" would ask for the same empty range forever. The
+     * descent therefore always terminates.
+     */
+    async function loadOlderMessages() {
+        if (!activeSessionId || !messagesContainerEl) return;
+        if (historyPageInFlight || historyReachedTop) return;
+        if (historyOldestSeq === null) return;
+
+        const stored = auth();
+        const userId = currentUserId();
+        const sessionId = String(activeSessionId);
+
+        historyPageInFlight = true;
+        let inserted = 0;
+        try {
+            while (!historyReachedTop) {
+                const end = Math.floor(historyOldestSeq) - 1;
+                if (end < 1) {
+                    historyReachedTop = true;
+                    break;
+                }
+                const start = Math.max(0, end - (HISTORY_PAGE_SIZE - 1));
+                const messages = await window.OxypeCore.getMessages(sessionId, start, end, userId, stored ? stored.token : null);
+                // A different conversation was opened while the request was in flight.
+                if (String(activeSessionId) !== sessionId) return;
+
+                historyOldestSeq = start;
+                if (start <= 1) historyReachedTop = true;
+
+                const rows = buildHistoryRows(Array.isArray(messages) ? messages : []);
+                if (rows.length > 0) {
+                    prependHistoryRows(rows);
+                    inserted += rows.length;
+                    historyEmptyPageStreak = 0;
+                    break;
+                }
+
+                // Every message in that range was deleted. Keep descending, but only
+                // while the reader is still waiting at the top.
+                historyEmptyPageStreak += 1;
+                if (historyEmptyPageStreak >= HISTORY_MAX_EMPTY_PAGES) {
+                    historyReachedTop = true;
+                    break;
+                }
+                if (!hasReachedHistoryTop()) break;
+            }
+        } catch (err) {
+            console.warn('[Classic] Failed to load older messages:', err);
+        } finally {
+            historyPageInFlight = false;
+        }
+
+        if (inserted > 0) {
+            // The splice can put two runs of the same sender side by side, so grouping and
+            // missing names are resolved across the whole transcript rather than only the
+            // rows that were just added.
+            refreshRenderedSenderGroups();
+            resolveRenderedPlaceholderSenders();
+        }
+    }
+
 
     // --------------------------------------------------------------- send ------
 
@@ -1562,7 +2895,7 @@
         if (hint) hint.remove();
         const sentAtMs = Date.now();
         const myName = currentUser && currentUser.username ? currentUser.username : 'Me';
-        appendMessage({ text, format, sender: myName, isSelf: true,
+        const sentRow = appendMessage({ text, format, sender: myName, senderId: userId, isSelf: true,
             timestamp: formatClockTime(sentAtMs), timestampMs: sentAtMs });
         updateActiveSessionPreview(myName, previewOfBody(text), sentAtMs);
 
@@ -1572,6 +2905,14 @@
             );
             if (res && typeof res.seq === 'number' && res.seq > 0) {
                 currentSeq = res.seq;
+                // The row was painted before the server had given the message an id, so
+                // the id is attached after the fact. Without it the message could not be
+                // edited or deleted until the conversation was reloaded, and it would be
+                // rendered a second time when its own broadcast arrived.
+                if (sentRow && !sentRow.dataset.messageId) {
+                    sentRow.dataset.messageId = String(res.seq);
+                    renderedMessageKeys.add(String(activeSessionId) + ':' + String(res.seq));
+                }
             }
         } catch (err) {
             console.error('[Classic] Failed to send message:', err);

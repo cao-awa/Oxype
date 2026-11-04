@@ -39,6 +39,16 @@ object OxypeHttpServer {
         "seq" set -1L
     }
 
+    /** Answer for a caller who is not a member: nothing was edited, nothing to report. */
+    private val EDIT_MESSAGE_FAILED: JSONObject = JSONObject {
+        "success" set false
+    }
+
+    /** Answer for a caller who is not a member: nothing was deleted. */
+    private val DELETE_MESSAGE_FAILED: JSONObject = JSONObject {
+        "success" set false
+    }
+
     fun KalmiaHttpContext.enableCors() {
         responseHeaders().set("Access-Control-Allow-Origin", "*")
         responseHeaders().set("Access-Control-Allow-Headers", "*")
@@ -201,6 +211,37 @@ object OxypeHttpServer {
     }
 
     /**
+     * Rejects a `pieces` array containing anything [MessagePieces.decode] cannot handle.
+     *
+     * Every piece is checked before any is decoded: an unknown type would otherwise
+     * reach MessagePiece.decode and its `CODECS[type]!!` would surface as a 500
+     * instead of a 400 naming the offending type. Shared by send and edit so a body
+     * accepted when it was written stays acceptable when it is revised.
+     */
+    fun KalmiaHttpContext.assertKnownPieceTypes(piecesJson: JSONArray) {
+        piecesJson.forEach { element ->
+            val piece = element as? JSONObject
+            if (piece == null) {
+                abortWith(
+                    MissingParameterException("Every entry of 'pieces' must be an object"),
+                    HttpResponseStatus.BAD_REQUEST,
+                    this
+                )
+                throw IllegalStateException("Unreachable: the request was aborted")
+            }
+            val type = piece.getString("type")
+            if (!MessagePiece.isKnownType(type)) {
+                abortWith(
+                    MissingParameterException("Unsupported message piece type '${type ?: ""}'"),
+                    HttpResponseStatus.BAD_REQUEST,
+                    this
+                )
+                throw IllegalStateException("Unreachable: the request was aborted")
+            }
+        }
+    }
+
+    /**
      * Authenticates a JSON request through the existing [UserManager.getUserByToken]
      * lookup and runs [action] with the resolved user.
      *
@@ -239,11 +280,11 @@ object OxypeHttpServer {
         val args = arguments()
         val useridRaw = args.get("userid")
             ?: args.get("userId")
-            ?: getHeader("userid")
-            ?: getHeader("X-User-Id")
+            ?: getRequestHeader("userid")
+            ?: getRequestHeader("X-User-Id")
         val token = args.get("token")
-            ?: getHeader("token")
-            ?: getHeader("X-Token")
+            ?: getRequestHeader("token")
+            ?: getRequestHeader("X-Token")
 
         if (useridRaw == null || token == null) {
             abortWith(
@@ -410,10 +451,13 @@ object OxypeHttpServer {
         val reason = when {
             value.trim().length > StyleSources.MAX_LENGTH ->
                 "must be at most ${StyleSources.MAX_LENGTH} characters"
+
             value.trim().startsWith("//") ->
                 "must not be a protocol-relative URL"
+
             value.trim().contains("..") ->
                 "must not contain '..'"
+
             else ->
                 "must be an '${StyleSources.HTTPS_PREFIX}' URL or a path on this site"
         }
@@ -435,12 +479,10 @@ object OxypeHttpServer {
             route("isAlive/{userid}") {
                 val userid by placeholder<Long>("userid")
                 post {
-                    println("Alive ping")
                     requireJsonBody { json ->
                         val token = assertString(json.getString("token"), "token")
 
                         val alive = UserManager.verifyToken(userid, token)
-                        println(alive)
                         JSONObject {
                             "is_alive" set alive
                         }
@@ -487,18 +529,30 @@ object OxypeHttpServer {
                 val userid by placeholder<Long>("userid")
                 get {
                     requireUserFromQuery { caller ->
-                        // Only ever expose the caller's own profile to keep this
-                        // read consistent with the authenticated-session policy.
                         val user = UserManager.getUser(userid)
-                        if (user == null || caller.id != userid) {
+                        if (user == null) {
                             abortWith(
                                 IllegalArgumentException("User not found"),
                                 HttpResponseStatus.NOT_FOUND,
                                 this
                             )
-                        } else {
+                        } else if (caller.id == userid) {
+                            // The caller's own record: full profile, password redacted.
                             JSONEncoder.encodeData(user).also {
                                 it.put("hashedPassword", "HIDDEN")
+                            }
+                        } else {
+                            // Anyone else's record is reduced to the display name.
+                            // A chat transcript has to be able to name its senders,
+                            // and a client that only ever sees "User #123" has no way
+                            // to learn who that is without reloading the page once the
+                            // roster is refetched. Only the name is shared: the stored
+                            // style sources stay private to their owner, and the
+                            // password hash is never copied into this view at all.
+                            JSONObject {
+                                "id" set user.id
+                                "username" set user.username
+                                "hashedPassword" set "HIDDEN"
                             }
                         }
                     }
@@ -589,24 +643,20 @@ object OxypeHttpServer {
                 val userid by placeholder<Long>("userid")
                 post {
                     requireJsonBody { json ->
-                        try {
-                            val password = assertString(json.getString("password"), "password")
+                        val password = assertString(json.getString("password"), "password")
 
-                            if (UserManager.verifyPassword(userid, password)) {
-                                val token = UserManager.login(userid)
+                        if (UserManager.verifyPassword(userid, password)) {
+                            val token = UserManager.login(userid)
 
-                                JSONObject {
-                                    "token" set token
-                                }
-                            } else {
-                                abortWith(
-                                    AuthenticationException("Failed to login"),
-                                    HttpResponseStatus.BAD_REQUEST,
-                                    this
-                                )
+                            JSONObject {
+                                "token" set token
                             }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
+                        } else {
+                            abortWith(
+                                AuthenticationException("Failed to login"),
+                                HttpResponseStatus.BAD_REQUEST,
+                                this
+                            )
                         }
                     }
                 }
@@ -671,7 +721,6 @@ object OxypeHttpServer {
                 post {
                     requireJsonBody { json ->
                         val sessions = json.getArray("sessions")
-                        println("Getting sessions: $sessions")
                         JSONArray {
                             sessions?.forEach {
                                 if (it is JSONNumber) {
@@ -713,34 +762,7 @@ object OxypeHttpServer {
                             val sender = assertLong(json.longValue("userid", "userId"), "userid")
                             val piecesJson = assertJsonArray(json.getArray("pieces"), "pieces")
 
-                            // Every piece is checked before any is decoded: an unknown
-                            // type would otherwise reach MessagePiece.decode and its
-                            // `CODECS[type]!!` would surface as a 500 instead of a 400
-                            // naming the offending type.
-                            piecesJson.forEach { element ->
-                                val piece = element as? JSONObject
-                                if (piece == null) {
-                                    abortWith(
-                                        MissingParameterException(
-                                            "Every entry of 'pieces' must be an object"
-                                        ),
-                                        HttpResponseStatus.BAD_REQUEST,
-                                        this
-                                    )
-                                    throw IllegalStateException("Unreachable: the request was aborted")
-                                }
-                                val type = piece.getString("type")
-                                if (!MessagePiece.isKnownType(type)) {
-                                    abortWith(
-                                        MissingParameterException(
-                                            "Unsupported message piece type '${type ?: ""}'"
-                                        ),
-                                        HttpResponseStatus.BAD_REQUEST,
-                                        this
-                                    )
-                                    throw IllegalStateException("Unreachable: the request was aborted")
-                                }
-                            }
+                            assertKnownPieceTypes(piecesJson)
 
                             val seq = MessageManager.sendMessage(
                                 sessionId,
@@ -750,10 +772,111 @@ object OxypeHttpServer {
 
                             // Publish only after persistence succeeds, using canonical JSON.
                             MessageManager.getMessage(sessionId, seq)?.let { message ->
-                                OxypeWebSocketServer.publishMessage(sessionId, sender, message)
+                                OxypeWebSocketServer.publishMessage(sessionId, message)
                             }
                             JSONObject {
                                 "seq" set seq
+                            }
+                        }
+                    }
+                }
+            }
+
+            route("editMessage/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireJoinedSession(json, sessionId, EDIT_MESSAGE_FAILED) {
+                            val sender = assertLong(json.longValue("userid", "userId"), "userid")
+                            val messageId = assertLong(json.longValue("messageId", "seq"), "messageId")
+                            val piecesJson = assertJsonArray(json.getArray("pieces"), "pieces")
+
+                            // Share the send path's piece validation so an unknown type is
+                            // a 400 naming it rather than a 500 out of MessagePiece.decode.
+                            assertKnownPieceTypes(piecesJson)
+
+                            // Membership is already proven, so the session itself is not
+                            // needed here any more; the lookup still rejects a session id
+                            // whose record is gone with a 404 before anything is written.
+                            requireSession(sessionId)
+                            val existing = MessageManager.getMessage(sessionId, messageId)
+                            if (existing == null) {
+                                abortWith(
+                                    IllegalArgumentException("Message not found"),
+                                    HttpResponseStatus.NOT_FOUND,
+                                    this
+                                )
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+
+                            // Only the author may revise their own words. Deleting is
+                            // what moderation uses (author or session admin/owner);
+                            // rewriting someone else's message is not moderation.
+                            // Membership was already established above.
+                            if (existing.sender != sender) {
+                                abortWith(
+                                    AuthenticationException("Only the author can edit this message"),
+                                    HttpResponseStatus.FORBIDDEN,
+                                    this
+                                )
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+
+                            val edited = MessageManager.editMessage(
+                                sessionId,
+                                messageId,
+                                MessagePieces.decode(piecesJson)
+                            )
+
+                            // Publish after persistence, from the stored record, so every
+                            // member sees the same body and the same edit stamp.
+                            edited?.let { OxypeWebSocketServer.publishMessageEdit(sessionId, it) }
+
+                            JSONObject {
+                                "success" set (edited != null)
+                                "message" set (edited?.encode() ?: JSONObject())
+                            }
+                        }
+                    }
+                }
+            }
+
+            route("deleteMessage/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireJoinedSession(json, sessionId, DELETE_MESSAGE_FAILED) {
+                            val sender = assertLong(json.longValue("userid", "userId"), "userid")
+                            val messageId = assertLong(json.longValue("messageId", "seq"), "messageId")
+
+                            val session = requireSession(sessionId)
+                            val existing = MessageManager.getMessage(sessionId, messageId)
+                            if (existing == null) {
+                                abortWith(
+                                    IllegalArgumentException("Message not found"),
+                                    HttpResponseStatus.NOT_FOUND,
+                                    this
+                                )
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+
+                            if (existing.sender != sender && !session.isAdmin(sender)) {
+                                abortWith(
+                                    AuthenticationException("Only the author or a session admin can delete this message"),
+                                    HttpResponseStatus.FORBIDDEN,
+                                    this
+                                )
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+
+                            val removed = MessageManager.deleteMessage(sessionId, messageId)
+                            if (removed) {
+                                OxypeWebSocketServer.publishMessageDelete(sessionId, messageId)
+                            }
+
+                            JSONObject {
+                                "success" set removed
+                                "messageId" set messageId
                             }
                         }
                     }
@@ -766,7 +889,7 @@ object OxypeHttpServer {
                 post {
                     requireJsonBody { json ->
                         // The sequence has to travel inside an object: Kalmia's encoder
-                        // refuses to serialise a bare primitive such as `Long`, which
+                        // refuses to serialize a bare primitive such as `Long`, which
                         // turned this route into a 500 for every call.
                         requireJoinedSession(json, sessionId, JSONObject { "seq" set 0L }) {
                             JSONObject {

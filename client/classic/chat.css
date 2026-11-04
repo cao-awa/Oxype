@@ -120,6 +120,10 @@ body {
     display: grid;
     grid-template-columns: 272px 1fr;
     height: 100vh;
+    /* The dynamic viewport unit follows the browser toolbar on a phone as it slides
+       away, so the composer is not left underneath it. The line above is the fallback
+       for engines that do not know the unit. */
+    height: 100dvh;
     gap: 0;
 }
 
@@ -495,6 +499,37 @@ body {
     border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
 }
 
+/* The drawer button is created by the script because the markup can be replaced by a
+   custom chat.html; the rule hides it until the narrow layout needs it. */
+.classic-rail-toggle {
+    display: none;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    cursor: pointer;
+}
+
+.classic-rail-toggle:hover {
+    background-color: var(--cl-face-hover);
+}
+
+.classic-rail-toggle:active {
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+}
+
+/* The scrim is created by the script too. It is laid out only while the narrow
+   layout has turned the rail into a drawer; on a wide screen it would otherwise
+   be an empty block inside the frameset grid and claim a row of its own. */
+.classic-rail-scrim {
+    display: none;
+}
+
 /* ------------------------------------------------------------------ controls -- */
 
 /* Shared dropdowns, restyled as sunken wells with a raised cap */
@@ -595,10 +630,15 @@ body {
     background-color: var(--cl-line-soft);
 }
 
-/* Incoming rows sit left, outgoing rows are mirrored to the right */
+/* Incoming rows sit left, outgoing rows are mirrored to the right.
+   Rows are bottom-aligned so the avatar lines up with the foot of the last bubble in
+   a run of messages from the same person, rather than floating up beside the first
+   one. The avatar is only drawn on that last row of the run (earlier rows keep the
+   hidden placeholder that reserves its column), so this is what makes the pair read
+   as one unit. */
 .message-row {
     display: flex;
-    align-items: flex-start;
+    align-items: flex-end;
     gap: 8px;
     max-width: 74%;
 }
@@ -781,6 +821,105 @@ body {
     text-align: right;
 }
 
+/* Marks a message whose body was changed after it was sent. Kept dim so it reads as
+   metadata rather than as part of the message. */
+.message-edited-mark {
+    font-style: italic;
+}
+
+/* Right-click message menu. Fixed positioning places it at the pointer, since the
+   message list scrolls and an absolutely positioned menu would drift with it. The
+   z-index sits above the message list but below both the dialogs and the toast layer
+   this skin inherits from style.css, so a toast raised by the menu is never hidden
+   behind it. */
+.message-menu {
+    position: fixed;
+    z-index: 95;
+    min-width: 132px;
+    padding: 2px;
+    background-color: var(--cl-face);
+    border-top: var(--cl-bevel) solid var(--cl-edge-light);
+    border-left: var(--cl-bevel) solid var(--cl-edge-light);
+    border-right: var(--cl-bevel) solid var(--cl-edge-darker);
+    border-bottom: var(--cl-bevel) solid var(--cl-edge-darker);
+    font-family: var(--cl-serif);
+}
+
+.message-menu-item {
+    display: block;
+    width: 100%;
+    padding: 5px 10px;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--cl-text);
+    font-family: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.message-menu-item:hover,
+.message-menu-item:focus-visible {
+    outline: none;
+    background-color: var(--cl-face-hover);
+    border-top-color: var(--cl-edge-light);
+    border-left-color: var(--cl-edge-light);
+    border-right-color: var(--cl-edge-dark);
+    border-bottom-color: var(--cl-edge-dark);
+}
+
+.message-menu-danger {
+    color: var(--danger-color);
+}
+
+.message-menu-danger:hover,
+.message-menu-danger:focus-visible {
+    background-color: var(--danger-light);
+    color: var(--danger-hover);
+}
+
+/* In-place message editor, shown where the body was so the message stays in view. */
+.message-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+}
+
+.message-editor-input {
+    width: 100%;
+    min-height: 54px;
+    max-height: 200px;
+    padding: 5px 7px;
+    border-top: var(--cl-bevel) solid var(--cl-edge-dark);
+    border-left: var(--cl-bevel) solid var(--cl-edge-dark);
+    border-right: var(--cl-bevel) solid var(--cl-edge-light);
+    border-bottom: var(--cl-bevel) solid var(--cl-edge-light);
+    background-color: var(--cl-paper);
+    color: var(--cl-text);
+    font-family: var(--cl-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.message-editor-input:focus {
+    outline: 1px dotted var(--cl-text-dim);
+    outline-offset: -3px;
+}
+
+.message-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+}
+
+/* An outgoing row is mirrored, so its editor keeps the text and the button row on the
+   right where the rest of that side's content sits. */
+.message-row.outgoing .message-editor-actions {
+    flex-direction: row-reverse;
+}
+
 /* Placeholder shown while no conversation is selected, or when one is empty */
 .empty-chat-splash {
     display: flex;
@@ -812,31 +951,56 @@ body {
     background-color: var(--cl-face);
     border-top: var(--cl-bevel) solid;
     border-top-color: var(--cl-edge-light);
+    /* Height of a single composer row, shared by the textarea and the format selector
+       so both controls are exactly as tall as each other at rest. Derived from
+       .classic-input below: line box (1.5 * 13px) + 7px/7px padding + bevel borders. */
+    --classic-composer-row-height: calc(1.5 * 13px + 14px + 4px);
 }
 
-/* Message format selector, at the left end of the composer row. */
-.classic-format {
-    display: inline-flex;
-    align-items: center;
+/* Message format trigger, at the left end of the composer row.
+   It is a plain button in the send button's family (see .classic-btn-primary) rather
+   than a select, so the two ends of the row are the same kind of control. Only the box
+   is narrowed: the bevel, fill and font come from the shared button classes. */
+.classic-format-btn {
+    /* Same box height as a single-row .classic-input (border-box, so bevels cancel
+       out). An explicit height replaces vertical padding, so the button lines up with
+       the textarea at rest and cannot drift as the input grows. */
+    height: var(--classic-composer-row-height);
+    padding: 0 10px;
+    /* Wide enough for either single-letter label without shifting between them. */
+    min-width: calc(var(--classic-composer-row-height) + 10px);
+    /* Keeps the button on the composer's baseline when the input grows. */
     flex: 0 0 auto;
 }
 
-.classic-format-select {
-    padding: 6px 8px;
-    font-family: inherit;
-    font-size: 12px;
-    color: var(--cl-text-dim);
-    background-color: var(--cl-face);
-    border: var(--cl-bevel) solid;
-    /* A raised edge: light top/left, dark bottom/right. */
-    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
-    border-radius: var(--cl-radius);
-    cursor: pointer;
+/* The letter is the trigger's only visible content; the button's own flex layout
+   centres it, and it is sized up slightly to stay legible at a narrow width. */
+.classic-format-btn .composer-format-letter {
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.02em;
 }
 
-.classic-format-select:disabled {
-    color: var(--cl-text-faint);
-    background-color: var(--cl-face-active);
+/* Format popup. It reuses the message menu's shell (.message-menu) for the frame,
+   bevels and item metrics; this only adds the anchoring width and the selected marker. */
+.composer-format-menu {
+    min-width: 118px;
+}
+
+.composer-format-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+/* The check is drawn beside the active entry rather than making it a different colour,
+   so the selected row stays readable in both themes. */
+.composer-format-option-active::after {
+    content: '\2713';
+    font-size: 11px;
+    color: var(--cl-caption);
 }
 
 .classic-input {
@@ -854,6 +1018,9 @@ body {
        The height is then driven by autoGrowComposer(). */
     resize: none;
     line-height: 1.5;
+    /* Matches the format selector's single-row height so both controls align at rest
+       as well as when grown. */
+    height: var(--classic-composer-row-height);
     max-height: 200px;
     overflow-y: hidden;
 }
@@ -1403,25 +1570,167 @@ body {
 
 /* ------------------------------------------------------------- narrow -------- */
 
-/* Collapse to a single column so the transcript keeps a usable width on phones */
+/* A phone has no room for two panes, so the rail leaves the grid and becomes a
+   drawer over the transcript. The grid collapses to a single column; the rail is
+   then positioned over it and slid off screen until it is asked for. */
 @media (max-width: 720px) {
     .classic-frameset {
         grid-template-columns: 1fr;
-        grid-template-rows: auto 1fr;
+        grid-template-rows: 1fr;
+        /* The dynamic viewport unit follows the browser toolbar on a phone as it
+           slides away, so the composer is not left underneath it. The line above is
+           the fallback for engines that do not know the unit. */
+        height: 100vh;
+        height: 100dvh;
     }
 
     .classic-rail {
-        border-right: none;
-        border-bottom: var(--cl-bevel) solid;
-        border-bottom-color: var(--cl-edge-dark);
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(86vw, 300px);
+        z-index: 10;
+        border-right: var(--cl-bevel) solid;
+        border-right-color: var(--cl-edge-dark);
+        /* The notch and the home indicator eat into the screen edges on a phone in
+           landscape, so the drawer keeps its content clear of both. */
+        padding-left: env(safe-area-inset-left);
+        padding-bottom: env(safe-area-inset-bottom);
+        transform: translateX(-100%);
+        /* This skin animates nothing, so the slide is opted into here. visibility is
+           what keeps the off-screen drawer out of the tab order, and its delay holds
+           it on screen until the closing slide has finished. */
+        transition: transform var(--transition-normal), visibility 0s linear var(--transition-normal);
+        visibility: hidden;
     }
 
+    .classic-rail.is-open {
+        transform: translateX(0);
+        visibility: visible;
+        box-shadow: 3px 0 0 rgba(0, 0, 0, 0.25);
+        transition: transform var(--transition-normal), visibility 0s;
+    }
+
+    .classic-rail-scrim {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        background-color: rgba(28, 22, 12, 0.42);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity var(--transition-normal), visibility 0s linear var(--transition-normal);
+        visibility: hidden;
+    }
+
+    .classic-rail-scrim.is-visible {
+        opacity: 1;
+        pointer-events: auto;
+        transition: opacity var(--transition-normal), visibility 0s;
+        visibility: visible;
+    }
+
+    /* The session list is a scroll region inside the drawer, so it gets the height of
+       the drawer rather than the fixed cap the stacked layout used. */
     .classic-session-list {
-        max-height: 34vh;
+        max-height: none;
+    }
+
+    .classic-main-header {
+        min-height: 46px;
+        gap: 8px;
+        padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
+    }
+
+    .classic-main-title-wrap {
+        flex: 1;
     }
 
     .classic-transcript,
     .messages-container {
         margin: 3px;
+        padding: 10px 8px;
+    }
+
+    .classic-composer {
+        padding: 6px 8px calc(8px + env(safe-area-inset-bottom));
+        padding-left: calc(8px + env(safe-area-inset-left));
+        padding-right: calc(8px + env(safe-area-inset-right));
+    }
+
+    /* Bubbles are clamped to three quarters of the pane on desktop, which leaves too
+       little text per line on a phone. */
+    .message-row {
+        max-width: 88%;
+    }
+
+    /* Touch targets. The glyphs keep their size; the boxes around them grow to the
+       44px a fingertip needs. The drawer button is only displayed here, since the
+       rail is always in place on a wide screen and needs no way back to it. The
+       inactive padding is set as well, because the pressed state re-pads the button
+       and would otherwise shrink it back. */
+    .classic-icon-btn,
+    .classic-rail-toggle {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    .classic-rail-toggle {
+        display: grid;
+    }
+
+    .classic-btn {
+        min-height: 44px;
+        padding: 12px 14px;
+    }
+
+    .classic-btn:active {
+        padding: 13px 13px 11px 15px;
+    }
+
+    .message-menu-item {
+        padding: 11px 12px;
+        font-size: 14px;
+    }
+
+    .dialog-close-btn {
+        width: 44px;
+        height: 44px;
+    }
+
+    /* Text controls are raised to 16px because a smaller font makes mobile Safari
+       zoom the whole page in when the control is focused, and it never zooms back
+       out. The composer row height is derived from that font size, so it has to be
+       recomputed here too or the format button and the input would drift apart. */
+    .classic-input,
+    .form-input,
+    .select-control {
+        font-size: 16px;
+    }
+
+    .classic-composer {
+        --classic-composer-row-height: calc(1.5 * 16px + 14px + 4px);
+    }
+
+    /* The 44px touch target above is taller than a composer row, and its padding would
+       be overwritten by the shared .classic-btn rule. Both are reset here, after that
+       rule, so the format button still lines up with the textarea; the row height
+       alone already clears 42px and the width gives it the rest of the slab. */
+    .classic-format-btn,
+    .classic-format-btn:active {
+        min-height: 0;
+        height: var(--classic-composer-row-height);
+        padding: 0 12px;
+        min-width: calc(var(--classic-composer-row-height) + 14px);
+    }
+
+    /* Dialogs are sized against the screen rather than a fixed box, so a long member
+       list still fits inside the phone's viewport. */
+    .interactive-dialog,
+    .classic-dialog {
+        width: calc(100vw - 16px);
+        max-height: calc(100dvh - 16px);
     }
 }
+

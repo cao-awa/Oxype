@@ -28,12 +28,15 @@ object UserManager {
     private val loggedUsers: MutableMap<String, Long> = mutableMapOf()
 
     fun getJoinedSessions(userid: Long): SessionList {
-        return STORAGE[createJoinedSessionsKey(userid), SessionList::class] ?: SessionList.EMPTY
+        val sessionList = STORAGE[createJoinedSessionsKey(userid), SessionList::class] ?: return SessionList.EMPTY
+        sessionList.normaliseStoredIds()
+        return sessionList
     }
 
     fun joinSession(userid: Long, sessionId: Long) {
         val key = createJoinedSessionsKey(userid)
         val sessionList = STORAGE[key, SessionList::class] ?: SessionList(false, mutableListOf())
+        sessionList.normaliseStoredIds()
         sessionList.add(sessionId)
         STORAGE[key] = sessionList
     }
@@ -41,6 +44,7 @@ object UserManager {
     fun leaveSession(userid: Long, sessionId: Long) {
         val key = createJoinedSessionsKey(userid)
         val sessionList = STORAGE[key, SessionList::class] ?: return
+        sessionList.normaliseStoredIds()
         sessionList.remove(sessionId)
         STORAGE[key] = sessionList
     }
