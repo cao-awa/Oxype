@@ -7,6 +7,12 @@ package com.github.kusa233.oxype.user
  * copies of the page, stylesheet and script. An empty (or absent) value means
  * "use the bundled file"; see [StyleSources] for the accepted values.
  *
+ * The `pref*` fields hold the presentation preferences that used to live only in
+ * the browser's `localStorage`: interface language, light/dark mode, colour tone,
+ * and the composer's body format. They travel with the account so the same person
+ * gets the same interface on every device. See [UserSettings] for the accepted
+ * values.
+ *
  * These fields are nullable rather than merely defaulted on purpose. Accounts are
  * persisted through Cason's reflective data class decoder, which passes `null` for
  * every key missing from the stored record instead of honouring a Kotlin default.
@@ -23,7 +29,15 @@ data class User(
     /** Absolute `https://` URL of a custom chat stylesheet, or empty for the bundled one. */
     val chatCssSource: String? = null,
     /** Absolute `https://` URL of a custom chat script, or empty for the bundled one. */
-    val chatJsSource: String? = null
+    val chatJsSource: String? = null,
+    /** Interface language code, or empty to let the browser decide. */
+    val prefLang: String? = null,
+    /** `light` or `dark`, or empty to follow the operating system. */
+    val prefTheme: String? = null,
+    /** Colour tone id, or empty for the default tone. */
+    val prefAccent: String? = null,
+    /** Composer body format: `text` or `markdown`. */
+    val prefInputFormat: String? = null
 )
 
 /*
@@ -36,3 +50,18 @@ data class User(
 val User.htmlSource: String get() = chatHtmlSource ?: ""
 val User.cssSource: String get() = chatCssSource ?: ""
 val User.jsSource: String get() = chatJsSource ?: ""
+
+/*
+ * Null-tolerant readers for the preference fields. Same reason as above: extension
+ * properties keep Cason from encoding a second, duplicated key for each value.
+ *
+ * Unlike the source readers these default to a *meaningful* value rather than the
+ * empty string, because a preference always has one: an account that never chose a
+ * language reads as English, one that never chose a format reads as plain text, and
+ * one that never chose a theme or tone reads as empty — meaning "no opinion, follow
+ * the browser" — which is exactly what the client did before these fields existed.
+ */
+val User.langPref: String get() = prefLang ?: ""
+val User.themePref: String get() = prefTheme ?: ""
+val User.accentPref: String get() = prefAccent ?: ""
+val User.inputFormatPref: String get() = prefInputFormat ?: ""

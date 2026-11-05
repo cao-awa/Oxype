@@ -13,8 +13,11 @@
         constructor() {
             this.theme = this.getInitialTheme();
             this.accent = this.getInitialAccent();
-            this.applyTheme(this.theme);
-            this.applyAccent(this.accent);
+            // "remember: false" because these are the values we just resolved, not a
+            // fresh choice: pushing them back would overwrite an account's stored
+            // preference with whatever this browser happened to open with.
+            this.applyTheme(this.theme, false);
+            this.applyAccent(this.accent, false);
         }
 
         /**
@@ -47,8 +50,9 @@
         /**
          * Apply accent tone to root document
          * @param {'default'|'sakura'|'grass'} accent 
+         * @param {boolean} [remember=true] whether this is a user choice worth storing
          */
-        applyAccent(accent) {
+        applyAccent(accent, remember = true) {
             this.accent = accent;
             if (accent === 'default') {
                 document.documentElement.removeAttribute('data-accent');
@@ -59,6 +63,11 @@
                 localStorage.setItem(STORAGE_KEY_ACCENT, accent);
             } catch (e) {
                 console.error('[StyleController] Failed to persist accent tone preference', e);
+            }
+            // Written locally first so the change is instant, then sent to the account
+            // so the same person gets the same tone on their other devices.
+            if (remember && global.OxypeSettings) {
+                global.OxypeSettings.push({ accent });
             }
             this.syncAccentSelectors();
             window.dispatchEvent(new CustomEvent('oxype:accentChanged', { detail: { accent } }));
@@ -113,14 +122,20 @@
         /**
          * Apply theme to root document
          * @param {'light'|'dark'} theme 
+         * @param {boolean} [remember=true] whether this is a user choice worth storing
          */
-        applyTheme(theme) {
+        applyTheme(theme, remember = true) {
             this.theme = theme;
             document.documentElement.setAttribute('data-theme', theme);
             try {
                 localStorage.setItem(STORAGE_KEY_THEME, theme);
             } catch (e) {
                 console.error('[StyleController] Failed to persist theme preference', e);
+            }
+            // Written locally first so the change is instant, then sent to the account
+            // so the same person gets the same mode on their other devices.
+            if (remember && global.OxypeSettings) {
+                global.OxypeSettings.push({ theme });
             }
             this.updateThemeButtons();
             this.syncThemeModeSelectors();

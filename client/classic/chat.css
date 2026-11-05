@@ -943,64 +943,72 @@ body {
 
 .classic-composer {
     display: flex;
-    /* Bottom-aligned so the button and format selector stay beside the last line as
-       the input grows, instead of drifting to its vertical centre. */
+    /* Bottom-aligned so the send button stays beside the last line as the input grows,
+       instead of drifting to its vertical centre. */
     align-items: flex-end;
     gap: 8px;
     padding: 8px 12px 10px;
     background-color: var(--cl-face);
     border-top: var(--cl-bevel) solid;
     border-top-color: var(--cl-edge-light);
-    /* Height of a single composer row, shared by the textarea and the format selector
-       so both controls are exactly as tall as each other at rest. Derived from
-       .classic-input below: line box (1.5 * 13px) + 7px/7px padding + bevel borders. */
+    /* Height of a single composer row, used by the textarea. Derived from .classic-input
+       below: line box (1.5 * 13px) + 7px/7px padding + bevel borders. */
     --classic-composer-row-height: calc(1.5 * 13px + 14px + 4px);
 }
 
-/* Message format trigger, at the left end of the composer row.
-   It is a plain button in the send button's family (see .classic-btn-primary) rather
-   than a select, so the two ends of the row are the same kind of control. Only the box
-   is narrowed: the bevel, fill and font come from the shared button classes. */
-.classic-format-btn {
-    /* Same box height as a single-row .classic-input (border-box, so bevels cancel
-       out). An explicit height replaces vertical padding, so the button lines up with
-       the textarea at rest and cannot drift as the input grows. */
-    height: var(--classic-composer-row-height);
-    padding: 0 10px;
-    /* Wide enough for either single-letter label without shifting between them. */
-    min-width: calc(var(--classic-composer-row-height) + 10px);
-    /* Keeps the button on the composer's baseline when the input grows. */
-    flex: 0 0 auto;
+/* Segmented control: the two-alternatives switch used by the Input Settings row.
+   Two caps sharing one frame rather than a select, because there are exactly two
+   mutually exclusive choices and both should be visible at once. It keeps the skin's
+   bevel language: the frame is a recessed well and the chosen side is pressed in. */
+.segmented-control {
+    display: inline-flex;
+    flex-shrink: 0;
+    border: var(--cl-bevel) solid;
+    border-color: var(--cl-edge-dark) var(--cl-edge-light) var(--cl-edge-light) var(--cl-edge-dark);
+    border-radius: var(--cl-radius);
+    overflow: hidden;
+    background-color: var(--cl-well);
 }
 
-/* The letter is the trigger's only visible content; the button's own flex layout
-   centres it, and it is sized up slightly to stay legible at a narrow width. */
-.classic-format-btn .composer-format-letter {
-    font-size: 13px;
+.segmented-option {
+    /* Equal widths keep the frame from resizing when the selection moves. */
+    min-width: 34px;
+    padding: 4px 11px;
+    border: none;
+    border-radius: 0;
+    background-color: transparent;
+    color: var(--cl-text);
+    font-family: inherit;
+    font-size: 12.5px;
     font-weight: 700;
-    line-height: 1;
-    letter-spacing: 0.02em;
+    line-height: 1.4;
+    cursor: pointer;
 }
 
-/* Format popup. It reuses the message menu's shell (.message-menu) for the frame,
-   bevels and item metrics; this only adds the anchoring width and the selected marker. */
-.composer-format-menu {
-    min-width: 118px;
+/* The divider belongs to the second button so the first one stays flush with the
+   frame's left edge. */
+.segmented-option + .segmented-option {
+    border-left: 1px solid var(--cl-line-soft);
 }
 
-.composer-format-option {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
+.segmented-option:hover {
+    background-color: var(--cl-face-hover);
 }
 
-/* The check is drawn beside the active entry rather than making it a different colour,
-   so the selected row stays readable in both themes. */
-.composer-format-option-active::after {
-    content: '\2713';
-    font-size: 11px;
-    color: var(--cl-caption);
+/* The selected state is driven by aria-checked, so the markup, the accessible state
+   and the paint can never disagree. The accent fill matches the affirmative button. */
+.segmented-option[aria-checked='true'] {
+    background-color: var(--cl-caption);
+    color: var(--text-inverse);
+}
+
+.segmented-option[aria-checked='true']:hover {
+    background-color: var(--primary-hover);
+}
+
+.segmented-option:focus-visible {
+    outline: 1px dotted var(--cl-text);
+    outline-offset: -4px;
 }
 
 .classic-input {
@@ -1702,7 +1710,7 @@ body {
     /* Text controls are raised to 16px because a smaller font makes mobile Safari
        zoom the whole page in when the control is focused, and it never zooms back
        out. The composer row height is derived from that font size, so it has to be
-       recomputed here too or the format button and the input would drift apart. */
+       recomputed here too or the input would keep the desktop height. */
     .classic-input,
     .form-input,
     .select-control {
@@ -1713,16 +1721,13 @@ body {
         --classic-composer-row-height: calc(1.5 * 16px + 14px + 4px);
     }
 
-    /* The 44px touch target above is taller than a composer row, and its padding would
-       be overwritten by the shared .classic-btn rule. Both are reset here, after that
-       rule, so the format button still lines up with the textarea; the row height
-       alone already clears 42px and the width gives it the rest of the slab. */
-    .classic-format-btn,
-    .classic-format-btn:active {
-        min-height: 0;
-        height: var(--classic-composer-row-height);
-        padding: 0 12px;
-        min-width: calc(var(--classic-composer-row-height) + 14px);
+    /* The two option buttons are tapped rather than clicked here, so each one is
+       grown to a comfortable touch target. They are not .classic-btn, so the shared
+       44px rule above never reaches them. */
+    .segmented-option {
+        min-width: 44px;
+        min-height: 36px;
+        padding: 7px 16px;
     }
 
     /* Dialogs are sized against the screen rather than a fixed box, so a long member

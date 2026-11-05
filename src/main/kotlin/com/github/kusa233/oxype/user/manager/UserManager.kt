@@ -9,9 +9,14 @@ import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_JOINED_SESSI
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_TOKEN_PREFIX
 import com.github.kusa233.oxype.user.User
+import com.github.kusa233.oxype.user.UserSettings
+import com.github.kusa233.oxype.user.accentPref
 import com.github.kusa233.oxype.user.cssSource
 import com.github.kusa233.oxype.user.htmlSource
+import com.github.kusa233.oxype.user.inputFormatPref
 import com.github.kusa233.oxype.user.jsSource
+import com.github.kusa233.oxype.user.langPref
+import com.github.kusa233.oxype.user.themePref
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.Random
@@ -62,7 +67,21 @@ object UserManager {
         val key = createUserKey(userid)
         val hashedPassword = PasswordHasher.hash(password)
 
-        return User(userid, username, hashedPassword, "", "", "").also { user ->
+        // Written with explicit empty strings rather than by relying on the defaults,
+        // so a freshly registered account reads back exactly like an old one that has
+        // never chosen a preference.
+        return User(
+            userid,
+            username,
+            hashedPassword,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+        ).also { user ->
             STORAGE[key] = user
         }
     }
@@ -70,20 +89,31 @@ object UserManager {
     /**
      * Loads an account.
      *
-     * Records written before the source fields existed decode with `null` in those
-     * positions, so a normalised copy is returned; everything above this point can
-     * rely on [User.htmlSource] and friends being non-null, and on JSON encoding
-     * producing an empty string rather than an explicit null.
+     * Records written before the source and preference fields existed decode with
+     * `null` in those positions, so a normalised copy is returned; everything above
+     * this point can rely on [User.htmlSource] and friends being non-null, and on
+     * JSON encoding producing an empty string rather than an explicit null.
      */
     fun getUser(userid: Long): User? {
         val stored = STORAGE[createUserKey(userid), User::class] ?: return null
-        if (stored.chatHtmlSource != null && stored.chatCssSource != null && stored.chatJsSource != null) {
+        if (stored.chatHtmlSource != null
+            && stored.chatCssSource != null
+            && stored.chatJsSource != null
+            && stored.prefLang != null
+            && stored.prefTheme != null
+            && stored.prefAccent != null
+            && stored.prefInputFormat != null
+        ) {
             return stored
         }
         return stored.copy(
             chatHtmlSource = stored.htmlSource,
             chatCssSource = stored.cssSource,
-            chatJsSource = stored.jsSource
+            chatJsSource = stored.jsSource,
+            prefLang = stored.langPref,
+            prefTheme = stored.themePref,
+            prefAccent = stored.accentPref,
+            prefInputFormat = stored.inputFormatPref
         )
     }
 
@@ -107,6 +137,41 @@ object UserManager {
             chatHtmlSource = chatHtmlSource.trim(),
             chatCssSource = chatCssSource.trim(),
             chatJsSource = chatJsSource.trim()
+        )
+        STORAGE[createUserKey(userid)] = updated
+        return updated
+    }
+
+    /**
+     * Updates the caller's interface preferences and returns the updated record.
+     *
+     * A `null` argument means "leave this preference alone"; an empty string means
+     * "clear it", which stores the same state every account is in before it first
+     * saves this form. That distinction is what makes a partial save safe: a client
+     * can send just the field the user changed and never has to restate the rest,
+     * so a stale view can never wipe a preference it did not know about.
+     *
+     * Each non-null value must satisfy the matching check in [UserSettings]; the
+     * caller is expected to have rejected anything else with a 400, so an
+     * unacceptable value never reaches storage. Values are stored trimmed.
+     *
+     * The style-source fields are left untouched, so saving preferences can never
+     * clear a custom front end.
+     */
+    fun updateSettings(
+        userid: Long,
+        prefLang: String? = null,
+        prefTheme: String? = null,
+        prefAccent: String? = null,
+        prefInputFormat: String? = null
+    ): User? {
+        val existing = getUser(userid) ?: return null
+
+        val updated = existing.copy(
+            prefLang = prefLang?.trim() ?: existing.prefLang,
+            prefTheme = prefTheme?.trim() ?: existing.prefTheme,
+            prefAccent = prefAccent?.trim() ?: existing.prefAccent,
+            prefInputFormat = prefInputFormat?.trim() ?: existing.prefInputFormat
         )
         STORAGE[createUserKey(userid)] = updated
         return updated

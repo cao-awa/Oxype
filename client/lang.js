@@ -58,13 +58,16 @@
             'chat.inputPlaceholderMarkdown': 'Type a message...',
             'chat.formatLabel': 'Message format',
             'chat.formatLabelLong': 'Message format (T = plain text, M = Markdown)',
-            // The trigger button shows one letter so it stays narrow; the full wording
-            // is kept in the paired *Long keys, which the popup entries, the button's
-            // accessible name and the confirmation toast use.
+            // The two option buttons keep the bare letters while the accessible names and
+            // the confirmation toast use the paired *Long keys, so the setting stays short
+            // on screen but still reads as full words to a screen reader.
             'chat.formatText': 'T',
             'chat.formatMarkdown': 'M',
             'chat.formatTextLong': 'Plain text',
             'chat.formatMarkdownLong': 'Markdown',
+            // Row in the Settings toast holding the plain-text / Markdown switch that
+            // used to sit in the composer.
+            'chat.settingsInput': 'Input Settings',
             'chat.sendBtn': 'Send',
             'chat.logoutBtn': 'Log Out',
             'chat.currentUser': 'Logged in as: {username} (ID: {userId})',
@@ -231,13 +234,15 @@
             'chat.inputPlaceholderMarkdown': '输入消息...',
             'chat.formatLabel': '消息格式',
             'chat.formatLabelLong': '消息格式（T = 纯文本，M = Markdown）',
-            // Same one-letter labels as the English table: the trigger button is narrow
-            // by design, and T/M are read as the format initials in both languages. The
-            // popup entries and the confirmation toast use the full names below.
+            // Same one-letter labels as the English table: T/M are read as the format
+            // initials in both languages. The accessible names and the confirmation
+            // toast use the full names below.
             'chat.formatText': 'T',
             'chat.formatMarkdown': 'M',
             'chat.formatTextLong': '纯文本',
             'chat.formatMarkdownLong': 'Markdown',
+            // 设置中承载纯文本 / Markdown 切换的那一行（原先位于输入区）。
+            'chat.settingsInput': '输入设置',
             'chat.sendBtn': '发送',
             'chat.logoutBtn': '退出登录',
             'chat.currentUser': '当前用户: {username} (ID: {userId})',
@@ -402,6 +407,11 @@
                 localStorage.setItem(STORAGE_KEY, langCode);
             } catch (e) {
                 console.error('[i18n] Failed to persist language to localStorage', e);
+            }
+            // Stored locally first so the switch is instant; the account is updated
+            // afterwards and a failure there does not undo what the user asked for.
+            if (global.OxypeSettings) {
+                global.OxypeSettings.push({ lang: langCode });
             }
             this.updateDom();
             window.dispatchEvent(new CustomEvent('oxype:languageChanged', { detail: { lang: langCode } }));

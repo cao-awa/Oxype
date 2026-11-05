@@ -87,10 +87,13 @@
 
     /** Assets that are part of the application itself and cannot be overridden. */
     var BASE_STYLESHEET = '/style.css';
+    // settings.js comes first: lang.js and style.js read their preference out of
+    // local storage the moment they are evaluated, so the account's stored values
+    // have to be in place before either of them runs.
     // markdown.js is bundled rather than overridable: it is the renderer that has to
     // stay safe against another user's message, so it must not be replaceable by a
     // user-configured source. It loads before chat.js, which calls into it.
-    var BASE_SCRIPTS = ['/lang.js', '/style.js', '/core.js', '/websocket.js', '/markdown.js'];
+    var BASE_SCRIPTS = ['/settings.js', '/lang.js', '/style.js', '/core.js', '/websocket.js', '/markdown.js'];
 
     /** Mirrors the server-side limit so a stored value can never be used unchecked. */
     var MAX_LENGTH = 128;
@@ -305,6 +308,79 @@
     var NO_SOURCES = { html: '', css: '', js: '' };
 
     /**
+     * Fetches JSON from this application, treating any failure as "nothing to say".
+     *
+     * The timeout matters more than the error handling: boot waits for this before it
+     * loads any client script, so a host that accepts the connection and then never
+     * answers would otherwise hold the page on the loading spinner.
+     */
+    function fetchJson(url) {
+        var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        var timer = setTimeout(function () {
+            if (controller) {
+                try { controller.abort(); } catch (e) { }
+            }
+        }, ASSET_TIMEOUT_MS);
+
+        return fetch(url, {
+            headers: { 'Accept': 'application/json' },
+            credentials: 'omit',
+            signal: controller ? controller.signal : undefined
+        }).then(function (response) {
+            clearTimeout(timer);
+            if (!response.ok) {
+                throw new Error('HTTP ' + response.status + ' for ' + url);
+            }
+            return response.json();
+        }).catch(function (error) {
+            clearTimeout(timer);
+            throw error;
+        });
+    }
+
+    /**
+     * Loads the account's saved preferences into local storage before any client
+     * script runs.
+     *
+     * The ordering is the whole point. `lang.js` reads its language and `style.js`
+     * reads its theme while they are being evaluated, so a value written after they
+     * load is only reflected on the *next* paint — the page would render in one
+     * language and then visibly correct itself. Adopting first means the first paint
+     * is already the right one.
+     *
+     * Fields the account has never set are left alone, and the values that only exist
+     * in this browser are pushed up afterwards, so an existing user keeps the choices
+     * they had before their account started remembering them.
+     */
+    function resolvePreferences() {
+        var userid = readStorage(STORAGE_KEY_USERID);
+        var token = readStorage(STORAGE_KEY_TOKEN);
+        if (!userid || !token) {
+            return Promise.resolve();
+        }
+
+        var url = '/getSettings/' + encodeURIComponent(userid)
+            + '?userid=' + encodeURIComponent(userid)
+            + '&token=' + encodeURIComponent(token);
+
+        return loadScriptIgnoringFailure('/settings.js')
+            .then(function () {
+                if (!global.OxypeSettings) return null;
+                return fetchJson(url).catch(function () {
+                    // Unreachable or refused: the local values still stand, so the
+                    // page is usable and nothing is reported.
+                    return null;
+                });
+            })
+            .then(function (body) {
+                if (!body || !global.OxypeSettings) return;
+                var data = (body && body.data) ? body.data : body;
+                var adoptable = global.OxypeSettings.adopt(data);
+                global.OxypeSettings.adoptLocalValues(adoptable);
+            });
+    }
+
+    /**
      * Reads the signed-in user's custom sources.
      *
      * Resolves to "no overrides" whenever the user is signed out or the lookup
@@ -481,8 +557,12 @@
         bundledBodyHtml = document.body.innerHTML;
         bundledTitle = document.title;
 
-        resolveSources().then(start, function () {
-            start(NO_SOURCES);
+        // Preferences are settled first: the client scripts read them as they load,
+        // so fetching them in parallel with the sources would race the first paint.
+        resolvePreferences().then(function () {
+            resolveSources().then(start, function () {
+                start(NO_SOURCES);
+            });
         });
     }
 

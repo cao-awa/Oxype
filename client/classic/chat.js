@@ -53,6 +53,53 @@
     let historyEmptyPageStreak = 0;
     let historyCheckScheduled = false;
 
+    // ------------------------------------------------------- calibration -----
+    //
+    // Live updates arrive as broadcasts, and a broadcast is a promise this client cannot
+    // keep: a frame lost while the socket was reconnecting, or while the tab was asleep,
+    // is never replayed. Nothing repairs that on its own -- the transcript keeps showing
+    // a message that was deleted, hides one that was sent, and keeps the old text of one
+    // that was edited, all until the conversation is re-opened.
+    //
+    // So the view reconciles itself against the server on a timer. It is far too small a
+    // budget to load a conversation: one bounded read at the tail for new messages, one
+    // sliding window over what is already on screen to find deletions and edits, and a
+    // few sidebar previews per pass. Nothing else.
+    //
+    // It is deliberately invisible. No spinner, no toast, no jump -- a correction the
+    // reader did not ask for should not be able to interrupt reading, and the repaired
+    // transcript is indistinguishable from one that was never wrong.
+
+    /** How often a pass runs. Long enough to stay out of the server's way, short enough
+     *  that a lost broadcast is measured in seconds rather than in a re-open. */
+    const CALIBRATION_INTERVAL_MS = 10000;
+
+    /** How many sequences one range read spans. The tail read and the verification
+     *  window both cap at this; a gap longer than it is filled over several passes. */
+    const CALIBRATION_VERIFY_SPAN = 200;
+
+    /** How close to the newest message still counts as "at the bottom". Inside this the
+     *  view follows new arrivals; outside it, the reader's position is preserved. */
+    const NEAR_BOTTOM_SLOP_PX = 48;
+
+    /** Sidebar previews re-read per pass, so a long list costs nothing up front. */
+    const CALIBRATION_PREVIEWS_PER_PASS = 3;
+
+    /** A single read may not outlive the pass that started it. */
+    const CALIBRATION_REQUEST_TIMEOUT_MS = 8000;
+
+    let calibrationTimer = null;
+    let calibrationInFlight = false;
+    /** Bumped whenever the cycle restarts or is torn down; an older number is a discarded
+     *  pass whose response must not be painted anywhere. */
+    let calibrationGeneration = 0;
+    /** Where the verification window resumes on the next pass, or null to restart from
+     *  the oldest rendered message. */
+    let calibrationVerifyFrom = null;
+    let calibrationVerifySessionId = null;
+    /** Sidebar preview walk position, so no conversation is skipped. */
+    let calibrationPreviewCursor = 0;
+
     // Style source form state, filled from the server on open
     let styleSourceDefaults = { html: '/chat.html', css: '/chat.css', js: '/chat.js' };
     let styleSourceMaxLength = 128;
@@ -69,7 +116,7 @@
     let messagesContainerEl;
     let chatComposerEl;
     let messageInputEl;
-    let messageFormatEl;
+    let messageFormatOptionsEl;
     let sendMessageBtnEl;
 
     let sessionOptionsBtnEl;
@@ -150,11 +197,6 @@
     // row under the pointer is the only state that has to be tracked.
     let messageMenuEl = null;
     let messageMenuTargetRow = null;
-
-    // The format popup raised by the composer's format button. It is built on first use
-    // for the same reason as the message menu: the page markup is user-supplied, so a
-    // popup read out of chat.html could be missing altogether.
-    let messageFormatMenuEl = null;
 
     // The row currently being edited in place, if any. A second menu cannot start a
     // second editor, so this also acts as the "one edit at a time" latch.
@@ -309,7 +351,12 @@
         return 'text';
     }
 
-    /** Remembers the chosen body format for the next visit. */
+    /**
+     * Remembers the chosen body format for the next visit.
+     *
+     * The local copy is written first so a switch is instant; the account is updated
+     * afterwards and a failure there does not undo what the user asked for.
+     */
     function writeStoredMessageFormat(format) {
         try {
             if (window.localStorage && MESSAGE_FORMATS.indexOf(format) !== -1) {
@@ -318,25 +365,28 @@
         } catch (e) {
             // Persisting the preference is a convenience, never a hard requirement.
         }
+        if (window.OxypeSettings && MESSAGE_FORMATS.indexOf(format) !== -1) {
+            window.OxypeSettings.push({ inputFormat: format });
+        }
     }
 
-    /** The body format currently selected in the composer.
+    /** The body format currently selected in Settings.
      *
-     * The trigger is a plain button, so the choice lives in storage alone; that also
-     * keeps the answer correct when a user-supplied chat.html omits the control.
+     * The choice lives in storage alone; that also keeps the answer correct when a
+     * user-supplied chat.html omits the control.
      */
     function getSelectedMessageFormat() {
         return readStoredMessageFormat();
     }
 
-    /** The short label for a format, shown on the trigger button. */
+    /** The short label for a format, shown on its option button. */
     function formatShortLabel(format) {
         return format === 'markdown'
             ? getI18nText('chat.formatMarkdown', 'M')
             : getI18nText('chat.formatText', 'T');
     }
 
-    /** The full name for a format, used in the popup and in the confirmation toast. */
+    /** The full name for a format, used in the accessible names and the toast. */
     function formatLongLabel(format) {
         return format === 'markdown'
             ? getI18nText('chat.formatMarkdownLong', 'Markdown')
@@ -344,137 +394,42 @@
     }
 
     /**
-     * Repaints the format button's letter.
+     * Repaints the two option buttons from the stored format.
      *
-     * The letter is written here rather than by data-i18n, and the span that holds it
-     * deliberately carries no data-i18n attribute: OxypeI18n.updateDom overwrites the
-     * text of any such node with the dictionary value, which would pin it to one letter.
+     * The letters are written here rather than by data-i18n, and the buttons
+     * deliberately carry no data-i18n attribute on their label: OxypeI18n.updateDom
+     * overwrites the text of any such node with the dictionary value, which would pin
+     * it to one letter. The group is a radio group, so the state lives in aria-checked
+     * and the highlight is styled from it, keeping one source of truth.
      */
     function paintMessageFormatTrigger() {
-        if (!messageFormatEl) return;
-        const letterEl = messageFormatEl.querySelector('.composer-format-letter');
-        if (!letterEl) return;
-        const format = getSelectedMessageFormat();
-        letterEl.textContent = formatShortLabel(format);
-        // The button has no visible text of its own, so its accessible name has to say
-        // which mode is active as well as what the button does.
-        const label = `${getI18nText('chat.formatLabel', 'Message format')} (${formatLongLabel(format)})`;
-        messageFormatEl.setAttribute('aria-label', label);
-        messageFormatEl.setAttribute('title', label);
-    }
-
-    /**
-     * Builds the format popup once; later opens only relabel it and move it.
-     *
-     * The entries carry the full format names while the trigger shows a single letter,
-     * so the compact button still explains itself when opened.
-     */
-    function ensureMessageFormatMenu() {
-        if (messageFormatMenuEl) return messageFormatMenuEl;
-
-        const menu = document.createElement('div');
-        menu.className = 'message-menu composer-format-menu';
-        menu.setAttribute('role', 'menu');
-        menu.style.display = 'none';
-
-        MESSAGE_FORMATS.forEach((format) => {
-            const item = document.createElement('button');
-            item.type = 'button';
-            item.className = 'message-menu-item composer-format-option';
-            item.dataset.format = format;
-            item.setAttribute('role', 'menuitemradio');
-            menu.appendChild(item);
-        });
-
-        // A click inside the popup acts on the format it names. The document-level
-        // dismisser ignores clicks that land in here, so this is the only path.
-        menu.addEventListener('click', (e) => {
-            const item = e.target && e.target.closest ? e.target.closest('.composer-format-option') : null;
-            if (!item) return;
-            applyMessageFormat(item.dataset.format);
-        });
-
-        document.body.appendChild(menu);
-        messageFormatMenuEl = menu;
-        return menu;
-    }
-
-    /**
-     * Opens the format popup above the trigger button.
-     *
-     * It is anchored to the button rather than to the pointer: the button sits at a fixed
-     * spot in the composer, so the popup has one predictable home.
-     */
-    function openMessageFormatMenu() {
-        if (!messageFormatEl) return;
-        const menu = ensureMessageFormatMenu();
+        if (!messageFormatOptionsEl) return;
         const selected = getSelectedMessageFormat();
-
-        // Labels and the current selection are looked up on every open, so a language
-        // change or a preference change made while it was closed is reflected.
         Array.prototype.forEach.call(
-            menu.querySelectorAll('.composer-format-option'),
-            (item) => {
-                const format = item.dataset.format;
-                item.textContent = formatLongLabel(format);
-                const isSelected = format === selected;
-                // The marker is styled from this attribute, so the check survives a
-                // theme change without a second class to keep in sync.
-                item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
-                item.classList.toggle('composer-format-option-active', isSelected);
+            messageFormatOptionsEl.querySelectorAll('.segmented-option'),
+            (option) => {
+                const format = option.dataset.format;
+                option.textContent = formatShortLabel(format);
+                option.setAttribute('aria-checked', format === selected ? 'true' : 'false');
             }
         );
-
-        // Shown before measuring: a hidden element reports a zero rect, and the clamp
-        // below needs the real size to keep the popup inside the viewport.
-        menu.style.display = 'block';
-        menu.style.left = '0px';
-        menu.style.top = '0px';
-
-        const rect = menu.getBoundingClientRect();
-        const anchor = messageFormatEl.getBoundingClientRect();
-        const margin = 8;
-
-        // Above the button, in the composer's own direction, so the popup never covers
-        // the text being typed; below it only when there is no room above.
-        let top = anchor.top - rect.height - margin;
-        if (top < margin) {
-            const below = anchor.bottom + margin;
-            top = Math.min(below, Math.max(margin, window.innerHeight - rect.height - margin));
-        }
-
-        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
-        menu.style.left = `${Math.min(Math.max(margin, anchor.left), maxLeft)}px`;
-        menu.style.top = `${Math.max(margin, top)}px`;
-
-        messageFormatEl.setAttribute('aria-expanded', 'true');
-    }
-
-    /** Hides the format popup. */
-    function closeMessageFormatMenu() {
-        if (messageFormatMenuEl) messageFormatMenuEl.style.display = 'none';
-        if (messageFormatEl) messageFormatEl.setAttribute('aria-expanded', 'false');
-    }
-
-    /** Opens the format popup when it is closed and closes it when it is open. */
-    function toggleMessageFormatMenu() {
-        if (messageFormatMenuEl && messageFormatMenuEl.style.display !== 'none') {
-            closeMessageFormatMenu();
-        } else {
-            openMessageFormatMenu();
-        }
+        // The group's own name says what the choice means, so it is refreshed with the
+        // labels; the per-option names come from data-i18n-title.
+        const label = getI18nText('chat.formatLabelLong', 'Message format (T = plain text, M = Markdown)');
+        messageFormatOptionsEl.setAttribute('aria-label', label);
+        messageFormatOptionsEl.setAttribute('title', label);
     }
 
     /**
      * Adopts a body format for the next message.
      *
-     * The toast names the format in full, because the trigger it was chosen from shows
-     * only a letter, and the confirmation is the one place the choice is spelled out.
+     * The toast names the format in full, because the option button it was chosen from
+     * shows only a letter, and the confirmation is the one place the choice is spelled
+     * out.
      */
     function applyMessageFormat(format) {
         if (MESSAGE_FORMATS.indexOf(format) === -1) return;
         writeStoredMessageFormat(format);
-        closeMessageFormatMenu();
         paintMessageFormatTrigger();
         updateComposerForFormat();
         toast(formatLongLabel(format), 'success');
@@ -957,15 +912,21 @@
      *
      * Dropping the key matters: without it a replayed history window or a late
      * broadcast would render the deleted message again.
+     *
+     * @param {HTMLElement} row
+     * @param {boolean} [deferRegroup] skip the sender regrouping because the caller is
+     *        removing several rows and will regroup once when it is done
      */
-    function removeMessageRow(row) {
+    function removeMessageRow(row, deferRegroup) {
         if (!row) return;
         if (editingRow === row) editingRow = null;
         const messageId = row.dataset.messageId;
         if (messageId) renderedMessageKeys.delete(String(activeSessionId) + ':' + String(messageId));
         row.remove();
         // The avatar and sender label of the following row depended on this one being
-        // part of the group, so the grouping is recomputed.
+        // part of the group, so the grouping is recomputed -- unless a batch removal is
+        // in progress, where regrouping per row would be quadratic and pointless.
+        if (deferRegroup === true) return;
         refreshRenderedSenderGroups();
     }
 
@@ -1051,7 +1012,7 @@
         messagesContainerEl = document.getElementById('messagesContainer');
         chatComposerEl = document.getElementById('chatComposer');
         messageInputEl = document.getElementById('messageInput');
-        messageFormatEl = document.getElementById('messageFormatSelect');
+        messageFormatOptionsEl = document.getElementById('messageFormatOptions');
         sendMessageBtnEl = document.getElementById('sendMessageBtn');
 
         sessionOptionsBtnEl = document.getElementById('sessionOptionsBtn');
@@ -1154,6 +1115,7 @@
             bindWebSocketMessages();
             window.OxypeWebSocket.start(stored);
         }
+        startCalibration();
 
         await loadUserDataAndSessions(stored.userId);
 
@@ -1227,10 +1189,6 @@
                 && !messageMenuEl.contains(e.target)) {
                 closeMessageMenu();
             }
-            if (messageFormatMenuEl && messageFormatMenuEl.style.display !== 'none'
-                && !messageFormatMenuEl.contains(e.target)) {
-                closeMessageFormatMenu();
-            }
         });
         if (messagesContainerEl) {
             messagesContainerEl.addEventListener('scroll', closeMessageMenu);
@@ -1241,7 +1199,6 @@
         }
         window.addEventListener('resize', () => {
             closeMessageMenu();
-            closeMessageFormatMenu();
             // A drawer left open while the window grew would stay in the tree as an
             // off-canvas element covering the two-pane layout, so it is dismissed as
             // soon as the rail can be shown in place.
@@ -1265,20 +1222,21 @@
             messageInputEl.addEventListener('input', () => autoGrowComposer());
         }
 
-        if (messageFormatEl) {
-            messageFormatEl.addEventListener('click', (e) => {
-                // The document-level dismisser would otherwise close the popup in the
-                // same tick it was opened.
-                e.stopPropagation();
-                toggleMessageFormatMenu();
+        if (messageFormatOptionsEl) {
+            // One delegated listener on the group rather than one per button, so a
+            // settings row that is rewritten by a future skin still works.
+            messageFormatOptionsEl.addEventListener('click', (e) => {
+                const option = e.target && e.target.closest ? e.target.closest('.segmented-option') : null;
+                if (!option) return;
+                applyMessageFormat(option.dataset.format);
             });
-            // The letter and the placeholder both derive from the stored preference, so
-            // one repaint covers them.
+            // The selected option and the placeholder both derive from the stored
+            // preference, so one repaint covers them.
             paintMessageFormatTrigger();
             updateComposerForFormat();
 
-            // Neither the letter nor the placeholder can come from data-i18n, since both
-            // depend on the selected format, so they are refreshed by hand.
+            // Neither the option state nor the placeholder can come from data-i18n,
+            // since both depend on the selected format, so they are refreshed by hand.
             window.addEventListener('oxype:languageChanged', () => {
                 paintMessageFormatTrigger();
                 updateComposerForFormat();
@@ -1289,13 +1247,7 @@
             if (e.key === 'Escape') {
                 // The open drawer is the outermost layer on a phone, so Escape unwinds
                 // one layer at a time: a dialog opened from the drawer closes first and
-                // leaves the drawer behind it. The format popup is the innermost layer,
-                // so it closes before anything else and swallows the key.
-                if (messageFormatMenuEl && messageFormatMenuEl.style.display !== 'none') {
-                    closeMessageFormatMenu();
-                    if (messageFormatEl) messageFormatEl.focus();
-                    return;
-                }
+                // leaves the drawer behind it.
                 if (isDialogOpen()) {
                     closeAllDialogs();
                 } else {
@@ -1453,6 +1405,9 @@
         closeAllDialogs();
         if (dialogOverlayEl) dialogOverlayEl.style.display = 'block';
         if (settingsDialogEl) settingsDialogEl.style.display = 'block';
+        // Repainted on open so the row shows the format actually in force, even if the
+        // account value arrived from another client while this dialog was closed.
+        paintMessageFormatTrigger();
     }
 
     /**
@@ -2113,6 +2068,32 @@
     }
 
     /**
+     * Writes a conversation's sidebar preview from a `lastMessage` answer.
+     *
+     * Shared by the delete path and the calibration cycle so the two cannot disagree
+     * about what an empty answer means: for the delete path blank is a real outcome and
+     * is written through. The cycle only writes an answer that names a message, because
+     * `lastMessage` looks back a bounded number of sequences and reporting nothing may
+     * simply mean the newest survivor is older than that -- a stale preview is a smaller
+     * lie than a blanked one.
+     *
+     * @param {string} sId
+     * @param {object|null} lastMsg
+     * @param {boolean} [blankWhenEmpty]
+     */
+    function writePreviewFromLastMessage(sId, lastMsg, blankWhenEmpty) {
+        if (!sessionListEl) return;
+        const item = sessionListEl.querySelector(`[data-session-id="${sId}"]`);
+        const previewEl = item ? item.querySelector('.session-last-message') : null;
+        if (!previewEl) return;
+        if (lastMsg && lastMsg.hasMessage && (lastMsg.content || lastMsg.senderName)) {
+            previewEl.textContent = `${lastMsg.senderName || 'User'}: ${lastMsg.content || ''}`;
+            return;
+        }
+        if (blankWhenEmpty) previewEl.textContent = '';
+    }
+
+    /**
      * Re-reads a conversation's preview from the server.
      *
      * Removing the message a preview was built from leaves the line naming a message
@@ -2128,14 +2109,7 @@
         if (inFlight) return inFlight;
         const pending = window.OxypeCore.getLastMessage(sId, currentUserId(), stored ? stored.token : null)
             .then(lastMsg => {
-                const item = sessionListEl.querySelector(`[data-session-id="${sId}"]`);
-                const previewEl = item ? item.querySelector('.session-last-message') : null;
-                if (!previewEl) return;
-                if (lastMsg && lastMsg.hasMessage && (lastMsg.content || lastMsg.senderName)) {
-                    previewEl.textContent = `${lastMsg.senderName || 'User'}: ${lastMsg.content || ''}`;
-                } else {
-                    previewEl.textContent = '';
-                }
+                writePreviewFromLastMessage(sId, lastMsg, true);
             })
             .catch(err => {
                 console.warn(`[Classic] refresh preview/${sId} failed:`, err.message);
@@ -2149,30 +2123,533 @@
         return pending;
     }
 
+    // -------------------------------------------------------- calibration -----
+
+    /**
+     * Whether the transcript is scrolled close enough to its newest message that
+     * incoming content may carry the view with it.
+     * @returns {boolean}
+     */
+    function isNearBottom() {
+        if (!messagesContainerEl) return true;
+        const distance = messagesContainerEl.scrollHeight
+            - messagesContainerEl.scrollTop
+            - messagesContainerEl.clientHeight;
+        // A container that has not been laid out reports zeros, and there is nothing to
+        // preserve in that case either.
+        if (!Number.isFinite(distance)) return true;
+        return distance <= NEAR_BOTTOM_SLOP_PX;
+    }
+
+    /**
+     * Records which row sits at the top of the visible transcript.
+     *
+     * A correction may insert or drop rows above the viewport, which would move the
+     * text under the reader without changing `scrollTop`. Remembering the row and its
+     * offset is what lets the repair put that same text back where it was.
+     *
+     * @returns {{row: HTMLElement, offset: number}|null}
+     */
+    function captureScrollAnchor() {
+        if (!messagesContainerEl) return null;
+        const containerTop = messagesContainerEl.getBoundingClientRect().top;
+        const rows = messagesContainerEl.querySelectorAll('.message-row');
+        for (let i = 0; i < rows.length; i++) {
+            const rect = rows[i].getBoundingClientRect();
+            // The first row still reaching below the top edge is the one being read.
+            if (rect.bottom > containerTop + 1) {
+                return { row: rows[i], offset: rect.top - containerTop };
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Puts the recorded row back at the offset it had before the transcript changed.
+     * @param {{row: HTMLElement, offset: number}|null} anchor
+     */
+    function restoreScrollAnchor(anchor) {
+        if (!messagesContainerEl || !anchor || !anchor.row || !anchor.row.isConnected) return;
+        const containerTop = messagesContainerEl.getBoundingClientRect().top;
+        const drift = (anchor.row.getBoundingClientRect().top - containerTop) - anchor.offset;
+        if (Math.abs(drift) > 0.5) messagesContainerEl.scrollTop += drift;
+    }
+
+    /**
+     * The rows that carry a server id, in document order.
+     *
+     * Rows still waiting for the send response have no id and are left out on purpose:
+     * they are not part of what the server knows, so they cannot be compared against it.
+     *
+     * @returns {Array<{seq: number, row: HTMLElement}>}
+     */
+    function collectRenderedSeqs() {
+        const found = [];
+        if (!messagesContainerEl) return found;
+        const rows = messagesContainerEl.querySelectorAll('.message-row');
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (row.dataset.messageId === undefined) continue;
+            const seq = Number(row.dataset.messageId);
+            if (Number.isFinite(seq)) found.push({ seq: seq, row: row });
+        }
+        return found;
+    }
+
+    /**
+     * Server sequence of a message record, whichever field carries it.
+     * @param {object} msg
+     * @returns {number|null}
+     */
+    function messageSeqOf(msg) {
+        if (!msg) return null;
+        const raw = (msg.id !== undefined && msg.id !== null) ? msg.id : msg.seq;
+        const seq = Number(raw);
+        return Number.isFinite(seq) && seq > 0 ? seq : null;
+    }
+
+    /**
+     * Places a row at the position its sequence number belongs to.
+     *
+     * The transcript is ordered by sequence, and a message recovered long after it was
+     * written belongs where it was written, not at the bottom. A row with no id yet is
+     * a send still in flight and by definition newer than anything numbered, so it moves
+     * the insertion point to keep the pending message last.
+     *
+     * @param {HTMLElement} row
+     * @param {number} seq
+     */
+    function insertRowInSequenceOrder(row, seq) {
+        if (!messagesContainerEl || !row) return;
+        const rendered = messagesContainerEl.querySelectorAll('.message-row');
+        let anchor = null;
+        for (let i = 0; i < rendered.length; i++) {
+            const candidate = rendered[i];
+            if (candidate === row) continue;
+            const raw = candidate.dataset.messageId;
+            if (raw === undefined) {
+                anchor = candidate;
+                break;
+            }
+            const other = Number(raw);
+            if (Number.isFinite(other) && other > seq) {
+                anchor = candidate;
+                break;
+            }
+        }
+        // Date separators are rebuilt from scratch after any repair, so a row landing on
+        // the wrong side of one of them for a moment is never painted.
+        messagesContainerEl.insertBefore(row, anchor);
+    }
+
+    /**
+     * Renders the records that the transcript does not have yet.
+     *
+     * De-duplication is left to `buildHistoryRows`, which owns the rendered-key set, so a
+     * record recovered here and the same record arriving through a broadcast cannot
+     * become two rows. A row of this client's own that is still waiting for its send
+     * response is paired up by body first, exactly as the broadcast path does.
+     *
+     * @param {Array<object>} messages records in ascending order
+     * @param {string} sessionId
+     * @returns {number} how many rows were added
+     */
+    function renderMissingMessages(messages, sessionId) {
+        const missing = [];
+        (messages || []).forEach(msg => {
+            const seq = messageSeqOf(msg);
+            if (seq === null) return;
+            if (renderedMessageKeys.has(String(sessionId) + ':' + String(seq))) return;
+            if (findMessageRow(seq)) return;
+            const body = bodyOfMessage(msg);
+            if (!body || !body.text) return;
+            if (adoptOptimisticRow(body.text, seq)) return;
+            missing.push(msg);
+        });
+        if (missing.length === 0) return 0;
+        // Built detached and inserted afterwards: appending one at a time would re-run the
+        // sticky-bottom scroll for every message of the batch.
+        const rows = buildHistoryRows(missing);
+        rows.forEach(row => {
+            insertRowInSequenceOrder(row, Number(row.dataset.messageId));
+        });
+        return rows.length;
+    }
+
+    /**
+     * Fetches a range of messages, keeping "the server said there is nothing" apart from
+     * "the server could not be asked".
+     *
+     * `OxypeCore.getMessages` folds a failed request into an empty array, which is fine
+     * for opening a conversation but not here: this cycle also decides that a row has
+     * been deleted, and a network hiccup must never be read as "everything is gone".
+     * The underlying transport is therefore called directly so failures stay visible.
+     *
+     * @param {string} sessionId
+     * @param {number} start inclusive
+     * @param {number} end inclusive
+     * @param {string|number} userId
+     * @param {string|null} token
+     * @returns {Promise<{ok: boolean, reliable: boolean, messages: Array<object>}>}
+     */
+    async function fetchMessageRangeReliably(sessionId, start, end, userId, token) {
+        const core = window.OxypeCore;
+        const request = core && typeof core.request === 'function' ? core.request.bind(core) : null;
+        if (!request) {
+            const messages = await core.getMessages(sessionId, start, end, userId, token);
+            return { ok: true, reliable: false, messages: messages || [] };
+        }
+        try {
+            const body = typeof core.authBody === 'function'
+                ? core.authBody(userId, token, { start: Number(start), end: Number(end) })
+                : { userid: userId, token: token || '', start: Number(start), end: Number(end) };
+            const response = await request(`/getMessages/${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                body: body,
+                timeout: CALIBRATION_REQUEST_TIMEOUT_MS
+            });
+            // `request` strips the outer Kalmia envelope but not the service payload's own
+            // shape, and `getMessages` answers `{"list": [...]}` rather than a bare array.
+            // Every shape `/getMessages` is known to use is accepted here; anything else is
+            // a body this cycle cannot reason about, and must not be mistaken for an empty
+            // conversation -- that mistake would delete every row on screen.
+            const list = Array.isArray(response) ? response
+                : (response && Array.isArray(response.list)) ? response.list
+                    : (response && Array.isArray(response.data)) ? response.data
+                        : (response && Array.isArray(response.messages)) ? response.messages
+                            : null;
+            if (list) {
+                return { ok: true, reliable: true, messages: list };
+            }
+            console.warn(`[Classic] Calibration read ${sessionId} ${start}-${end} returned no message list`);
+            return { ok: false, reliable: false, messages: [] };
+        } catch (err) {
+            console.warn(`[Classic] Calibration could not read ${sessionId} ${start}-${end}:`, err && err.message);
+            return { ok: false, reliable: false, messages: [] };
+        }
+    }
+
+    /**
+     * True when a pass has been overtaken and must stop painting.
+     * @param {number} generation
+     * @param {string|number} sessionId
+     * @returns {boolean}
+     */
+    function calibrationAbandoned(generation, sessionId) {
+        return generation !== calibrationGeneration
+            || String(activeSessionId) !== String(sessionId);
+    }
+
+    /**
+     * Reconciles the open conversation against what the server currently holds.
+     *
+     * Two things are checked, and they answer different questions. The newest surviving
+     * sequence from `lastMessage` says how far the conversation now reaches, which makes
+     * everything past the last row on screen missing outright — that is the case a lost
+     * broadcast leaves behind. The verification window then walks the rendered range
+     * once per pass asking the server what it actually holds there, which is the only way
+     * to tell a deleted message from one that simply was not fetched: a range fetch
+     * returns survivors, and a hole is therefore proof of a deletion.
+     *
+     * @param {number} generation
+     * @returns {Promise<object|null>} the `lastMessage` answer this pass already paid for,
+     *          or null when it never got one; the sidebar reuses it instead of asking
+     *          the same question twice about the open conversation
+     */
+    async function calibrateActiveSession(generation) {
+        const sessionId = activeSessionId;
+        if (!sessionId) return null;
+        const core = window.OxypeCore;
+        if (!core) return null;
+        const stored = auth();
+        if (!stored) return null;
+        const userId = currentUserId();
+        const token = stored.token || null;
+
+        let newest = null;
+        try {
+            newest = await core.getLastMessage(sessionId, userId, token);
+        } catch (err) {
+            console.warn('[Classic] Calibration could not read the newest message:', err && err.message);
+            return null;
+        }
+        if (calibrationAbandoned(generation, sessionId)) return null;
+        // `lastMessage` looks back only a bounded number of sequences, so when it reports
+        // nothing it may mean an empty conversation *or* one whose newest survivor is
+        // older than that lookback. It therefore only ever supplies an upper bound; it is
+        // never taken as proof that the transcript on screen is stale.
+        const newestSeq = (newest && newest.hasMessage === true)
+            ? messageSeqOf({ id: newest.id })
+            : null;
+        if (newest && newest.hasMessage === true && newestSeq === null) return newest;
+        if (newestSeq !== null) currentSeq = Math.max(currentSeq, newestSeq);
+
+        const rendered = collectRenderedSeqs();
+        const wasNearBottom = isNearBottom();
+        const anchor = wasNearBottom ? null : captureScrollAnchor();
+        let changed = false;
+
+        // Anything past the newest surviving sequence cannot exist on the server: those
+        // rows were deleted while this client was not listening.
+        if (newestSeq !== null) {
+            rendered.forEach(item => {
+                if (item.seq <= newestSeq) return;
+                if (item.row === editingRow) return;
+                removeMessageRow(item.row, true);
+                changed = true;
+            });
+        }
+
+        // Recomputed from the live transcript, because the rows just dropped must not
+        // influence where the tail fetch or the verification window begin.
+        const live = collectRenderedSeqs();
+        let localMax = 0;
+        live.forEach(item => {
+            if (item.seq > localMax) localMax = item.seq;
+        });
+
+        // The tail first: a reader looking at the newest message should see the newest
+        // message, even when the gap is longer than one window. Successive passes keep
+        // filling the same gap without ever rendering a record out of order.
+        if (newestSeq !== null && newestSeq > localMax) {
+            const tailStart = localMax + 1;
+            const tailEnd = Math.min(newestSeq, tailStart + CALIBRATION_VERIFY_SPAN - 1);
+            const tail = await fetchMessageRangeReliably(sessionId, tailStart, tailEnd, userId, token);
+            if (calibrationAbandoned(generation, sessionId)) return null;
+            if (tail.ok && renderMissingMessages(tail.messages, sessionId) > 0) changed = true;
+        }
+
+        // The verification window. It remembers where it stopped so a long transcript is
+        // covered over several passes, and restarts from the oldest row once it has
+        // walked the whole range. Without an anchor from the server the rendered range
+        // itself is the only bound available, which is what lets a conversation whose
+        // messages were all deleted empty itself out here.
+        if (calibrationVerifySessionId !== String(sessionId)) {
+            calibrationVerifySessionId = String(sessionId);
+            calibrationVerifyFrom = null;
+        }
+        const spanEnd = newestSeq !== null ? newestSeq : localMax;
+        const oldestRendered = live.length > 0 ? live[0].seq : 1;
+        let windowStart = calibrationVerifyFrom === null ? oldestRendered : Number(calibrationVerifyFrom);
+        if (!Number.isFinite(windowStart) || windowStart < 1) windowStart = 1;
+        const windowEnd = Math.min(spanEnd, windowStart + CALIBRATION_VERIFY_SPAN - 1);
+        if (windowStart <= windowEnd) {
+            const verified = await fetchMessageRangeReliably(sessionId, windowStart, windowEnd, userId, token);
+            if (calibrationAbandoned(generation, sessionId)) return null;
+            if (verified.ok) {
+                const surviving = new Map();
+                verified.messages.forEach(msg => {
+                    const seq = messageSeqOf(msg);
+                    if (seq !== null) surviving.set(seq, msg);
+                });
+                if (verified.reliable) {
+                    // A row inside the window that the server no longer returns was deleted
+                    // somewhere this client never heard about.
+                    live.forEach(item => {
+                        if (item.seq < windowStart || item.seq > windowEnd) return;
+                        if (surviving.has(item.seq)) return;
+                        if (item.row === editingRow || !item.row.isConnected) return;
+                        removeMessageRow(item.row, true);
+                        changed = true;
+                    });
+                }
+                // The server also decides what a message says, so a body that differs is a
+                // change whose broadcast was missed. A row being edited is never touched.
+                surviving.forEach((msg, seq) => {
+                    const row = findMessageRow(seq);
+                    if (!row || row === editingRow) return;
+                    const body = bodyOfMessage(msg);
+                    if (!body || !body.text) return;
+                    const known = row.oxypeMessage || {};
+                    const knownFormat = known.format === 'markdown' ? 'markdown' : 'text';
+                    const nextFormat = body.format === 'markdown' ? 'markdown' : 'text';
+                    if (known.text !== body.text || knownFormat !== nextFormat) {
+                        applyMessageEdit(row, body);
+                        changed = true;
+                        return;
+                    }
+                    if (msg.editedAt && !row.querySelector('.message-edited-mark')) {
+                        markMessageEdited(row);
+                        changed = true;
+                    }
+                });
+                if (renderMissingMessages(verified.messages, sessionId) > 0) changed = true;
+            }
+            // Advanced even on a failed read: the window would otherwise be pinned to a
+            // range that cannot be answered, while a later pass retries it on the next lap.
+            calibrationVerifyFrom = windowEnd >= newestSeq ? null : windowEnd + 1;
+        } else {
+            calibrationVerifyFrom = null;
+        }
+
+        if (!changed) return newest;
+        if (calibrationAbandoned(generation, sessionId)) return null;
+        normalizeDateSeparators();
+        refreshRenderedSenderGroups();
+        if (anchor) {
+            restoreScrollAnchor(anchor);
+        } else if (wasNearBottom && messagesContainerEl) {
+            // Following the newest message is only the right move for a reader who was
+            // already there; anyone scrolled back keeps their place.
+            messagesContainerEl.scrollTop = messagesContainerEl.scrollHeight;
+        }
+        // A sender first seen this way has no name yet, so the placeholders the new rows
+        // were built with are resolved now rather than on the next conversation open.
+        resolveRenderedPlaceholderSenders();
+        return newest;
+    }
+
+    /**
+     * Re-reads the sidebar previews, a few conversations per pass.
+     *
+     * The preview names the newest message of its conversation, so it drifts for the same
+     * reasons the transcript does. It is never allowed to reorder the list: sorting is
+     * driven by activity the user witnessed, and a background correction that moved rows
+     * under the pointer would be worse than a stale preview. The open conversation is
+     * always included, everything else is walked so no entry is skipped.
+     *
+     * @param {object|null} [activeLastMessage] the `lastMessage` answer the transcript half
+     *        of this pass already fetched for the open conversation, so it is not fetched
+     *        a second time
+     */
+    function calibrateSidebarPreviews(activeLastMessage) {
+        if (!sessionListEl) return;
+        if (activeSessionId) {
+            if (activeLastMessage) {
+                writePreviewFromLastMessage(String(activeSessionId), activeLastMessage, false);
+            } else {
+                refreshSessionPreview(activeSessionId);
+            }
+        }
+        const items = sessionListEl.querySelectorAll('.session-item');
+        if (items.length === 0) return;
+        if (calibrationPreviewCursor >= items.length || calibrationPreviewCursor < 0) {
+            calibrationPreviewCursor = 0;
+        }
+        const budget = Math.min(CALIBRATION_PREVIEWS_PER_PASS, items.length);
+        let index = calibrationPreviewCursor;
+        for (let checked = 0; checked < budget; checked++) {
+            const item = items[index % items.length];
+            index++;
+            const sid = item ? item.dataset.sessionId : null;
+            if (!sid) continue;
+            if (String(sid) === String(activeSessionId)) continue;
+            refreshSessionPreview(sid);
+        }
+        calibrationPreviewCursor = items.length > 0 ? index % items.length : 0;
+    }
+
+    /**
+     * One calibration pass.
+     *
+     * Runs on a timer, so it must be cheap and must never overlap itself: a pass still
+     * waiting on the server is a pass whose work the next tick has no reason to repeat.
+     * It also stands down whenever the view is not showing something it could correct —
+     * a hidden tab, or a conversation whose history is still being loaded.
+     */
+    async function runCalibrationPass() {
+        if (calibrationInFlight) return;
+        if (typeof document !== 'undefined' && document.hidden) return;
+        if (historyLoadingSessionId) return;
+        if (historyPageInFlight) return;
+        calibrationInFlight = true;
+        const generation = calibrationGeneration;
+        try {
+            const activeLastMessage = await calibrateActiveSession(generation);
+            if (generation !== calibrationGeneration) return;
+            calibrateSidebarPreviews(activeLastMessage);
+        } catch (err) {
+            console.warn('[Classic] Calibration pass failed:', err && err.message ? err.message : err);
+        } finally {
+            calibrationInFlight = false;
+        }
+    }
+
+    /**
+     * A tab that has just become visible is the textbook stale transcript, so it gets a
+     * pass immediately instead of waiting for the rest of the interval.
+     */
+    function handleCalibrationVisibilityChange() {
+        if (!document || document.hidden) return;
+        runCalibrationPass();
+    }
+
+    /** Starts the calibration cycle. */
+    function startCalibration() {
+        stopCalibration();
+        calibrationTimer = setInterval(runCalibrationPass, CALIBRATION_INTERVAL_MS);
+        if (typeof document !== 'undefined' && document.addEventListener) {
+            document.addEventListener('visibilitychange', handleCalibrationVisibilityChange);
+        }
+    }
+
+    /**
+     * Stops the calibration cycle and discards any pass still in flight.
+     *
+     * The generation bump is what makes the discard safe: a response that arrives after
+     * this point carries an older number and is dropped instead of being painted into a
+     * conversation the reader has left, or into a page that is being torn down.
+     */
+    function stopCalibration() {
+        calibrationGeneration++;
+        if (calibrationTimer !== null) {
+            clearInterval(calibrationTimer);
+            calibrationTimer = null;
+        }
+        if (typeof document !== 'undefined' && document.removeEventListener) {
+            document.removeEventListener('visibilitychange', handleCalibrationVisibilityChange);
+        }
+        calibrationInFlight = false;
+        calibrationVerifyFrom = null;
+        calibrationVerifySessionId = null;
+        calibrationPreviewCursor = 0;
+    }
+
     // -------------------------------------------------------------- session ----
 
     /** Loads a conversation's history, roster and metadata, then renders it. */
 
-    /** Refresh sender labels, initials and contiguous-group metadata after a profile resolves. */
+    /**
+     * Refresh sender labels, initials and contiguous-group metadata after a profile resolves.
+     *
+     * A run of consecutive rows from one sender carries both of its markers on opposite
+     * ends: the name belongs to the run's first row, the avatar to its last one. That
+     * cannot be decided in a single forward pass -- when a row is reached, whether it ends
+     * its run depends on the row *after* it, which has not been looked at yet. An earlier
+     * version drove both markers from "does this row continue the previous one" and so put
+     * the avatar on the run's first row as well, leaving the newest message of every run
+     * with no face beside it.
+     *
+     * The keys are therefore computed first and the rows visited second, so each row can
+     * be judged against both neighbours.
+     */
     function refreshRenderedSenderGroups() {
         if (!messagesContainerEl) return;
-        let previousKey = null;
-        messagesContainerEl.querySelectorAll('.message-row').forEach(row => {
+        const rows = Array.from(messagesContainerEl.querySelectorAll('.message-row'));
+        if (!rows.length) return;
+
+        const keys = rows.map(row => {
             const senderName = row.dataset.senderName || 'User';
-            const senderKey = `${row.classList.contains('outgoing') ? 'self' : 'other'}:${senderName}`;
-            const continuesGroup = previousKey === senderKey;
-            row.dataset.senderKey = senderKey;
+            const key = `${row.classList.contains('outgoing') ? 'self' : 'other'}:${senderName}`;
+            row.dataset.senderKey = key;
+            return key;
+        });
+
+        rows.forEach((row, i) => {
+            const senderName = row.dataset.senderName || 'User';
+            const continuesPrevious = i > 0 && keys[i - 1] === keys[i];
+            const continuesNext = i + 1 < rows.length && keys[i + 1] === keys[i];
+
             const label = row.querySelector('.message-sender');
             if (label) {
                 label.textContent = senderName;
-                label.classList.toggle('is-hidden', continuesGroup);
+                label.classList.toggle('is-hidden', continuesPrevious);
             }
             const avatar = row.querySelector('.message-avatar');
             if (avatar) {
                 avatar.textContent = senderName.trim().charAt(0).toUpperCase() || '?';
-                avatar.classList.toggle('is-hidden', continuesGroup);
+                avatar.classList.toggle('is-hidden', continuesNext);
             }
-            previousKey = senderKey;
         });
     }
 
@@ -2451,11 +2928,8 @@
     function setComposerEnabled(enabled) {
         if (messageInputEl) messageInputEl.disabled = !enabled;
         if (sendMessageBtnEl) sendMessageBtnEl.disabled = !enabled;
-        // The format belongs to the composer, so it is inert until a conversation is.
-        if (messageFormatEl) messageFormatEl.disabled = !enabled;
-        // A popup left open over a disabled composer would still be clickable, since its
-        // entries are not the disabled control.
-        if (!enabled) closeMessageFormatMenu();
+        // The body format now lives in Settings as an account preference, so it is
+        // deliberately left enabled: it is settable before a conversation is picked.
     }
 
     /** Paints the active conversation's title and subtitle. */
@@ -2674,7 +3148,7 @@
             isSelf,
             timestamp: timestampMs ? formatClockTime(timestampMs) : '',
             timestampMs,
-            messageId: msg.id,
+            messageId: (msg.id !== undefined && msg.id !== null) ? msg.id : msg.seq,
             editedAt: Number(msg.editedAt) || 0,
             stickToBottom: false
         };
@@ -2690,7 +3164,11 @@
             const dedupeKey = `${sessionKey}:${String(view.messageId)}`;
             if (renderedMessageKeys.has(dedupeKey)) return;
             renderedMessageKeys.add(dedupeKey);
-            rows.push(createMessageRow(view, null));
+            const row = createMessageRow(view, null);
+            // A record that carries an edit stamp was edited before it was ever drawn
+            // here, so the marker belongs on the row as it is built.
+            if (view.editedAt) markMessageEdited(row);
+            rows.push(row);
         });
         return rows;
     }
@@ -3320,6 +3798,12 @@
             setComposerEnabled(false);
             showEmptyConversationHint();
 
+            // No conversation is open, so there is nothing for the transcript half of the
+            // cycle to reconcile; a pass still in flight for the conversation that was
+            // just left must not paint into the emptied pane.
+            stopCalibration();
+            startCalibration();
+
             if (sessionListEl && sessionListEl.querySelectorAll('.session-item').length === 0
                 && emptySessionsPlaceholderEl) {
                 emptySessionsPlaceholderEl.style.display = 'flex';
@@ -3512,6 +3996,7 @@
     // -------------------------------------------------------------- logout -----
 
     function handleLogout() {
+        stopCalibration();
         if (window.OxypeWebSocket) {
             window.OxypeWebSocket.stop();
         }

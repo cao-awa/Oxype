@@ -489,6 +489,65 @@
         }
 
         /**
+         * Read the caller's interface preferences
+         * GET /getSettings/{userid}?userid=..&token=..
+         *
+         * The values come back exactly as stored, empty included: empty means "this
+         * account has no opinion", which is what lets a browser's existing local
+         * preference be adopted into an account that predates these settings.
+         *
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         * @returns {Promise<{lang: string, theme: string, accent: string, inputFormat: string, languages: string[], themes: string[], accents: string[], inputFormats: string[], defaultLang: string, defaultInputFormat: string, maxLength: number}|null>}
+         */
+        async getSettings(userId = null, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            if (currentUserId === null || currentUserId === undefined) {
+                throw new Error('User ID is required');
+            }
+
+            const endpoint = `/getSettings/${encodeURIComponent(currentUserId)}${this.authQuery(currentUserId, authToken)}`;
+            return await this.request(endpoint, { method: 'GET' });
+        }
+
+        /**
+         * Store the caller's interface preferences
+         * POST /updateSettings/{userid}
+         *
+         * Only the keys actually present on [settings] are sent. An omitted key leaves
+         * that stored preference untouched, so a caller can save one field without
+         * restating the others; an explicit empty string clears it. The server refuses
+         * anything outside its allow-lists with a 400.
+         *
+         * @param {{lang?: string, theme?: string, accent?: string, inputFormat?: string}} settings
+         * @param {number|string} [userId]
+         * @param {string} [token]
+         */
+        async updateSettings(settings = {}, userId = null, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            if (currentUserId === null || currentUserId === undefined) {
+                throw new Error('User ID is required');
+            }
+
+            const payload = {};
+            ['lang', 'theme', 'accent', 'inputFormat'].forEach((key) => {
+                if (Object.prototype.hasOwnProperty.call(settings, key)) {
+                    payload[key] = settings[key] || '';
+                }
+            });
+
+            return await this.request(`/updateSettings/${encodeURIComponent(currentUserId)}`, {
+                method: 'POST',
+                body: this.authBody(currentUserId, token, payload)
+            });
+        }
+
+        /**
          * Fetch the latest message of a session
          * GET /lastMessage/{sessionId}?userid=..&token=..
          *

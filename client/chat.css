@@ -699,14 +699,13 @@
     border-top: 1px solid var(--border-color);
     background-color: var(--bg-surface);
     display: flex;
-    /* Bottom-aligned so the send button and format selector stay beside the last
-       line as the input grows, instead of drifting to its vertical centre. */
+    /* Bottom-aligned so the send button stays beside the last line as the input grows,
+       instead of drifting to its vertical centre. */
     align-items: flex-end;
     gap: 12px;
-    /* Height of a single composer row, shared by the textarea and the format selector
-       so both controls are exactly as tall as each other at rest. Derived from
-       .chat-input below: line box (1.45 * 0.95rem) + 12px/12px padding + 1px/1px
-       border. Bottom alignment then keeps them flush as the input grows. */
+    /* Height of a single composer row, used by the textarea so the row it occupies is
+       predictable. Derived from .chat-input below: line box (1.45 * 0.95rem) + 12px/12px
+       padding + 1px/1px border. */
     --composer-row-height: calc(1.45 * 0.95rem + 26px);
 }
 
@@ -714,80 +713,85 @@
     flex: 1;
     padding: 12px 16px;
     font-size: 0.95rem;
-    border-radius: var(--radius-full);
+    /* The same corner family as the message avatars: this skin is deliberately squarer
+       than a bubble-and-pill chat, so the box the user types in is not rounded off
+       while the faces beside it are not. */
+    border-radius: var(--radius-md);
     /* A textarea defaults to a monospace-ish content box and a fixed height; both are
        reset so it sits exactly where the single-line input did. The height is then
        driven by autoGrowComposer(). */
     resize: none;
     line-height: 1.45;
-    /* Matches the format selector's single-row height so both controls align at rest
-       as well as when grown. */
+    /* The resting single-row height, so the composer looks the same before the first
+       keystroke as after it. */
     height: var(--composer-row-height);
     max-height: 200px;
     overflow-y: hidden;
     font-family: inherit;
 }
 
-/* Send button. Declared before .composer-format-btn on purpose: the format trigger
-   reuses this class for its fill and type, then narrows the padding, and both selectors
-   have equal specificity, so the narrowing only wins if it comes later in the file. */
+/* Send button. Matches the input's corner radius so the two ends of the composer row
+   belong to the same shape family. */
 .btn-send {
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     padding: 10px 20px;
     font-size: 0.95rem;
     /* Keeps the button on the composer's baseline when the input grows. */
     flex: 0 0 auto;
 }
 
-/* Message format trigger, at the left end of the composer row.
-   It is a plain button in the send button's family (see .btn-send above) rather than a
-   select, so the two ends of the row are the same kind of control. Only the box is
-   narrowed: the fill, radius and font come from the shared button classes. */
-.composer-format-btn {
-    /* The same single-row height as .chat-input, so the row stays level at rest and
-       keeps level as the input grows. */
-    height: var(--composer-row-height);
-    padding: 0 14px;
-    /* Wide enough for either single-letter label without the button changing size when
-       the label switches: the min-width, not the glyph, is what sets the width. */
-    min-width: calc(var(--composer-row-height) + 4px);
-    /* Keeps the button on the composer's baseline when the input grows. */
-    flex: 0 0 auto;
+/* Segmented control: the two-alternatives switch used by the Input Settings row.
+   Two buttons in a shared frame rather than a select, because there are exactly two
+   mutually exclusive choices and both should be visible at once. */
+.segmented-control {
+    display: inline-flex;
+    flex-shrink: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background-color: var(--bg-surface);
 }
 
-.composer-format-btn:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-}
-
-/* The letter is the trigger's only visible content, so it is centred by the button's
-   own flex layout and sized up slightly to stay legible at a narrow width. */
-.composer-format-letter {
-    font-size: 1rem;
+.segmented-option {
+    /* Equal widths keep the frame from resizing when the selection moves. */
+    min-width: 40px;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 0;
+    background-color: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.875rem;
     font-weight: 700;
-    line-height: 1;
-    letter-spacing: 0.02em;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
 }
 
-/* Format popup. It reuses the message menu's shell (.message-menu) for the frame,
-   shadow and item metrics; this only adds the anchoring width and the selected marker. */
-.composer-format-menu {
-    min-width: 132px;
+/* The divider belongs to the second button so the first one stays flush with the
+   frame's left edge. */
+.segmented-option + .segmented-option {
+    border-left: 1px solid var(--border-color);
 }
 
-.composer-format-option {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+.segmented-option:hover {
+    background-color: var(--bg-surface-hover);
 }
 
-/* The check is drawn beside the active entry rather than making it a different colour,
-   so the selected row stays readable in both themes. */
-.composer-format-option-active::after {
-    content: '\2713';
-    font-size: 0.85em;
-    color: var(--primary-color);
+/* The selected state is driven by aria-checked, so the markup, the accessible state
+   and the paint can never disagree. */
+.segmented-option[aria-checked='true'] {
+    background-color: var(--primary-color);
+    color: #ffffff;
+}
+
+.segmented-option[aria-checked='true']:hover {
+    background-color: var(--primary-hover);
+}
+
+.segmented-option:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
 }
 
 /* Interactive Dialogs (Toast Popups) */
@@ -1400,7 +1404,7 @@
     /* Text controls are raised to 16px because a smaller font makes mobile Safari
        zoom the whole page in when the control is focused, and it never zooms back
        out. The composer row height is derived from that font size, so it has to be
-       recomputed here too or the format button and the input would drift apart. */
+       recomputed here too or the input would keep the desktop height. */
     .chat-input,
     .message-editor-input {
         font-size: 16px;
@@ -1410,10 +1414,11 @@
         --composer-row-height: calc(1.45 * 16px + 26px);
     }
 
-    /* The letter keeps its own size; only the box around it has to clear 44px. */
-    .composer-format-btn {
-        padding: 0 16px;
-        min-width: calc(var(--composer-row-height) + 8px);
+    /* The two option buttons are tapped rather than clicked here, so each one is
+       grown to a comfortable touch target without changing the row's height. */
+    .segmented-option {
+        min-width: 44px;
+        padding: 8px 16px;
     }
 
     /* The dialogs are a fixed 400px box with generous padding on desktop, which is

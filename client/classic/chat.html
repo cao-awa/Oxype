@@ -81,20 +81,9 @@
             <div class="messages-container classic-transcript" id="messagesContainer"></div>
 
             <form class="classic-composer" id="chatComposer">
-                <!-- Body format for the next message, at the left end of the composer row.
-                     It is a button in the send button's family rather than a dropdown
-                     control, so the two ends of the row read as a matched pair. type
-                     must stay "button": this composer is a form, so the default would
-                     send the message instead of opening the format popup. The letter is
-                     painted by chat.js from the stored format. -->
-                <button type="button" id="messageFormatSelect"
-                        class="classic-btn classic-btn-primary classic-format-btn"
-                        data-i18n-title="chat.formatLabelLong"
-                        title="Message format (T = plain text, M = Markdown)"
-                        aria-label="Message format (T = plain text, M = Markdown)"
-                        aria-haspopup="true" aria-expanded="false">
-                    <span class="composer-format-letter">T</span>
-                </button>
+                <!-- The format for the next message is a setting rather than a control in
+                     this row: it is a per-account preference, so it belongs with the other
+                     preferences in Settings instead of next to the thing being typed. -->
                 <textarea id="messageInput" class="classic-input" rows="1"
                        data-i18n-placeholder="chat.inputPlaceholder"
                        placeholder="Type a message..." autocomplete="off"></textarea>
@@ -279,6 +268,25 @@
                 <div class="settings-row-label"><span data-i18n="chat.styleSourcesTitle">Style Source</span></div>
                 <button type="button" id="openStyleSourcesBtn" class="btn-secondary btn-settings-open"
                         data-i18n="chat.styleSourcesOpenBtn">Configure</button>
+            </div>
+            <!-- Input Settings: the plain-text / Markdown switch for the next message.
+                 It used to be the leftmost control of the composer; it is a stored
+                 preference, so it sits with the other stored preferences. -->
+            <div class="settings-row settings-row-input">
+                <div class="settings-row-label"><span data-i18n="chat.settingsInput">Input Settings</span></div>
+                <div id="messageFormatOptions" class="segmented-control" role="radiogroup"
+                     data-i18n-title="chat.formatLabelLong"
+                     title="Message format (T = plain text, M = Markdown)"
+                     aria-label="Message format (T = plain text, M = Markdown)">
+                    <button type="button" class="segmented-option" data-format="text"
+                            role="radio" aria-checked="true"
+                            data-i18n-title="chat.formatTextLong" title="Plain text"
+                            aria-label="Plain text">T</button>
+                    <button type="button" class="segmented-option" data-format="markdown"
+                            role="radio" aria-checked="false"
+                            data-i18n-title="chat.formatMarkdownLong" title="Markdown"
+                            aria-label="Markdown">M</button>
+                </div>
             </div>
             <div class="settings-row settings-logout-row">
                 <div class="settings-row-label"><span data-i18n="chat.logoutBtn">Log Out</span></div>

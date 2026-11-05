@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="robots" content="noindex, nofollow">
+<title>404 Not Found</title>
+<!-- Inline icon: keeps the page self-contained and avoids a pointless request to
+     /favicon.ico, which on a 404 is guaranteed to miss (and pollutes the console). -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 14' shape-rendering='crispEdges'%3E%3Crect width='20' height='14' fill='%2379c3e8'/%3E%3Cg fill='%23fdfaf2'%3E%3Crect x='5' y='1' width='10' height='1'/%3E%3Crect x='3' y='2' width='14' height='1'/%3E%3Crect x='2' y='3' width='15' height='1'/%3E%3Crect x='1' y='4' width='16' height='5'/%3E%3Crect x='2' y='9' width='14' height='1'/%3E%3Crect x='3' y='10' width='12' height='1'/%3E%3C/g%3E%3Cg fill='%2331302e'%3E%3Crect x='15' y='4' width='3' height='5'/%3E%3Crect x='4' y='11' width='1' height='3'/%3E%3Crect x='9' y='11' width='1' height='3'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+    :root {
+        --sky-top: #79c3e8;
+        --ink: #22333f;
+    }
+
+    * {
+        box-sizing: border-box;
+    }
+
+    html,
+    body {
+        height: 100%;
+    }
+
+    body {
+        margin: 0;
+        overflow: hidden;
+        background: var(--sky-top);
+        color: var(--ink);
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    /*
+     * The scene is drawn at a small internal resolution (a few hundred pixels wide)
+     * and scaled up by the browser. `pixelated` keeps the art looking like art
+     * instead of a blurry mess; `crisp-edges` is the older spelling kept as a fallback.
+     */
+    #scene {
+        position: fixed;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        image-rendering: crisp-edges;
+        image-rendering: pixelated;
+    }
+
+    .hud {
+        position: fixed;
+        left: 50%;
+        bottom: max(16px, env(safe-area-inset-bottom, 0px));
+        transform: translateX(-50%);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 6px 14px;
+        max-width: min(92vw, 640px);
+        padding: 8px 14px;
+        background: rgba(255, 255, 255, 0.8);
+        border: 2px solid rgba(34, 51, 63, 0.22);
+        border-radius: 4px;
+        font-size: 13px;
+        line-height: 1.45;
+        text-align: center;
+    }
+
+    /* Empty hint reserves no space, so the bar only grows when it has something to say. */
+    #hint:empty {
+        display: none;
+    }
+
+    #hint {
+        opacity: 0;
+        transition: opacity 260ms ease-out;
+    }
+
+    #hint.show {
+        opacity: 1;
+    }
+
+    .hud a {
+        color: var(--ink);
+        font-weight: 700;
+        text-decoration: none;
+        border-bottom: 2px solid currentColor;
+        padding-bottom: 1px;
+        white-space: nowrap;
+    }
+
+    .hud a:hover,
+    .hud a:focus-visible {
+        color: #0d5c8a;
+    }
+
+    .hud a:focus-visible {
+        outline: 2px solid #0d5c8a;
+        outline-offset: 3px;
+    }
+
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    noscript .hud {
+        background: rgba(255, 255, 255, 0.95);
+    }
+</style>
+</head>
+<body>
+
+<noscript>
+    <div class="hud">
+        <span>404 Not Found — 这个页面不存在。</span>
+        <a href="/">返回首页</a>
+    </div>
+</noscript>
+
+<canvas id="scene" aria-hidden="true"></canvas>
+
+<!-- The heading lives in the DOM so screen readers and search engines still get it;
+     the visible copy is painted into the pixel scene. -->
+<h1 class="sr-only">404 Not Found</h1>
+
+<div class="hud" id="hud">
+    <span id="hint"></span>
+    <a href="/" id="homeLink">返回首页</a>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    /* ------------------------------------------------------------------ *
+     * Timing. The flock clears the whole field in EAT_MS, then the page
+     * leaves a beat to read the scene and bounces to the site root.
+     * ------------------------------------------------------------------ */
+    var EAT_MS = 14400;        // last blade is gone right around here
+    var CHEW_MS = 320;         // how long one blade takes to disappear
+    var REDIRECT_AT = 15600;   // ~15s of eating, then go home
+    var HINT_AT = 10000;       // start promising the redirect before it happens
+
+    /* ------------------------------------------------------------------ *
+     * Palette. Kept in one place so the scene can be re-tinted easily.
+     * ------------------------------------------------------------------ */
+    var C = {
+        skyTop: '#79c3e8',
+        skyBottom: '#d9f1f7',
+        sun: '#ffe66d',
+        sunHalo: '#fff2a8',
+        cloud: '#ffffff',
+        hillFar: '#a8d977',
+        hillNear: '#8fcc5f',
+        grassBand: '#5fae43',
+        grassEdge: '#79c65a',
+        soil: '#3f8a2f',
+        ink: '#22333f',
+        inkSoft: 'rgba(255, 255, 255, 0.5)'
+    };
+
+    /* ------------------------------------------------------------------ *
+     * Strings. The rest of the site is bilingual with a zh-CN dictionary,
+     * so the 404 honours the same preference instead of guessing.
+     * ------------------------------------------------------------------ */
+    var TEXT = {
+        'zh-CN': {
+            hint: '\u8349\u5403\u5b8c\u4e86\uff0c\u6b63\u5728\u5e26\u4f60\u56de\u9996\u9875\u2026',
+            link: '\u7acb\u5373\u8fd4\u56de\u9996\u9875'
+        },
+        en: {
+            hint: 'All the grass is gone \u2014 taking you home\u2026',
+            link: 'Back to home now'
+        }
+    };
+
+    function pickText() {
+        var stored = null;
+        try {
+            stored = window.localStorage.getItem('oxype_lang');
+        } catch (e) {
+            // Private mode / blocked storage: fall through to the browser language.
+        }
+        var tag = stored || (navigator.language || 'en');
+        var key = String(tag).toLowerCase().indexOf('zh') === 0 ? 'zh-CN' : 'en';
+        return TEXT[key] || TEXT.en;
+    }
+
+    /* ------------------------------------------------------------------ *
+     * The sheep. 20x14 art pixels, facing right, head at the leading edge so
+     * its nose lands on the grass it is chewing.
+     *   W wool   S wool shade   H head   E eye   L leg   . transparent
+     * ------------------------------------------------------------------ */
+    var SHEEP_ART = [
+        '.....WWWWWWWW.......',
+        '...WWWWWWWWWWWW.....',
+        '..WWWWWWWWWWWWWW....',
+        '.WWWWWWWWWWWWWWWW...',
+        '.WWWWWWWWWWWWWWWHHH.',
+        '.WWWWWWWWWWWWWWHHHH.',
+        '.WWWWWWWWWWWWWWHHEH.',
+        '.WWWWWWWWWWWWWWWHHH.',
+        '..WWWWWWWWWWWWWWHH..',
+        '..SWWWWWWWWWWWWWS...',
+        '...SWWWWWWWWWWWS....',
+        '....LL......LL......',
+        '....LL......LL......',
+        '....LL......LL......'
+    ];
+
+    var SHEEP_W = 20;
+    var SHEEP_H = 14;
+    var SHEEP_COLORS = {
+        W: '#fdfaf2',
+        S: '#ded6c6',
+        H: '#31302e',
+        E: '#ffffff',
+        L: '#31302e'
+    };
+
+    // Distance from the sprite's left edge to its nose; grass must vanish here.
+    var NOSE_OFFSET = 17;
+
+    /* ------------------------------------------------------------------ *
+     * State
+     * ------------------------------------------------------------------ */
+    var canvas = document.getElementById('scene');
+    var ctx = canvas.getContext('2d');
+    var hintEl = document.getElementById('hint');
+    var linkEl = document.getElementById('homeLink');
+
+    var W = 0;                 // internal scene width, in art pixels
+    var H = 0;
+    var PX = 1;                // how many CSS pixels one art pixel occupies
+    var groundY = 0;           // top of the grass band = where blades take root
+    var mouthStart = 0;
+    var mouthEnd = 0;
+
+    var blades = [];
+    var flockSize = 3;
+    var bg = null;
+    var sheepSprite = null;
+    var startedAt = 0;
+    var redirecting = false;
+    var rafId = 0;
+
+    var strings = pickText();
+    linkEl.textContent = strings.link;
+
+    var reduceMotion = false;
+    try {
+        reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch (e) {
+        reduceMotion = false;
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Sprite baking. Drawing 840 little rects per frame would work, but a
+     * pre-rendered bitmap is cheaper and keeps the pixel grid exact.
+     * ------------------------------------------------------------------ */
+    function buildSheepSprite() {
+        var c = document.createElement('canvas');
+        c.width = SHEEP_W;
+        c.height = SHEEP_H;
+        var g = c.getContext('2d');
+
+        for (var y = 0; y < SHEEP_ART.length; y++) {
+            var row = SHEEP_ART[y];
+            for (var x = 0; x < row.length; x++) {
+                var ch = row.charAt(x);
+                var color = SHEEP_COLORS[ch];
+                if (!color) {
+                    continue;
+                }
+                g.fillStyle = color;
+                g.fillRect(x, y, 1, 1);
+            }
+        }
+        return c;
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Bitmap font, 5x7, only the glyphs this page actually needs.
+     * ------------------------------------------------------------------ */
+    var GLYPHS = {
+        '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+        '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+        'N': ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+        'O': ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+        'T': ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+        'F': ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+        'U': ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+        'D': ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+        ' ': ['00000', '00000', '00000', '00000', '00000', '00000', '00000']
+    };
+
+    function textWidth(text, scale) {
+        return (text.length * 6 - 1) * scale;
+    }
+
+    /** Paints [text] centred on [cx], with its top edge at [top]. */
+    function drawText(g, text, cx, top, scale, color, shadow) {
+        var width = textWidth(text, scale);
+        var x0 = Math.round(cx - width / 2);
+
+        // A one-pixel light offset underneath makes the glyphs read as carved
+        // rather than flat, without needing a second colour pass.
+        for (var pass = 0; pass < (shadow ? 2 : 1); pass++) {
+            g.fillStyle = pass === 0 ? (shadow || color) : color;
+            var ox = pass === 0 ? 1 : 0;
+            var oy = pass === 0 ? 1 : 0;
+
+            for (var i = 0; i < text.length; i++) {
+                var glyph = GLYPHS[text.charAt(i)];
+                if (!glyph) {
+                    continue;
+                }
+                var gx = x0 + i * 6 * scale + ox;
+                for (var gy = 0; gy < 7; gy++) {
+                    var line = glyph[gy];
+                    for (var gxx = 0; gxx < 5; gxx++) {
+                        if (line.charAt(gxx) === '1') {
+                            g.fillRect(gx + gxx * scale, top + gy * scale + oy, scale, scale);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Layout
+     * ------------------------------------------------------------------ */
+    function fit() {
+        var vw = Math.max(1, window.innerWidth);
+        var vh = Math.max(1, window.innerHeight);
+
+        // Aim for ~190 art rows tall and at least ~170 columns wide, then take
+        // whichever budget is tighter. Deriving PX from height alone would give a
+        // phone only ~98 columns, which crowds the heading and the flock.
+        var byHeight = Math.round(vh / 190);
+        var byWidth = Math.round(vw / 170);
+        PX = Math.max(2, Math.min(byHeight, byWidth));
+
+        W = Math.max(80, Math.round(vw / PX));
+        H = Math.max(60, Math.round(vh / PX));
+
+        canvas.width = W;
+        canvas.height = H;
+        ctx.imageSmoothingEnabled = false;
+
+        groundY = H - Math.max(14, Math.round(H * 0.17));
+
+        // The nose travels from just off the left edge to just inside the right
+        // edge, so every blade is eaten and the leading sheep stays on screen.
+        mouthStart = -6;
+        mouthEnd = W - 3 - NOSE_OFFSET + NOSE_OFFSET; // W - 3
+
+        // Narrow screens only have room for a smaller flock.
+        flockSize = W < 200 ? 2 : 3;
+
+        buildBlades();
+        buildBackground();
+    }
+
+    function buildBlades() {
+        blades = [];
+        var span = mouthEnd - mouthStart;
+        if (span <= 0) {
+            return;
+        }
+
+        for (var x = 2; x <= W - 4; x += 3) {
+            var bx = Math.min(W - 4, x + (Math.random() * 2 | 0));
+            var p = (bx - mouthStart) / span;
+            var jitter = Math.random() * 260 - 130;
+
+            blades.push({
+                x: bx,
+                h: 3 + (Math.random() * 4 | 0),          // 3..6 pixels tall
+                eatAt: Math.max(0, p * EAT_MS + jitter), // when it starts to vanish
+                dark: Math.random() < 0.35
+            });
+        }
+    }
+
+    function buildBackground() {
+        bg = document.createElement('canvas');
+        bg.width = W;
+        bg.height = H;
+        var g = bg.getContext('2d');
+
+        // Sky, one horizontal line at a time so the banding stays crisp.
+        for (var y = 0; y < groundY; y++) {
+            g.fillStyle = mix(C.skyTop, C.skyBottom, groundY === 0 ? 0 : y / groundY);
+            g.fillRect(0, y, W, 1);
+        }
+
+        // Sun with a soft halo.
+        var sunX = Math.round(W * 0.82);
+        var sunY = Math.round(H * 0.17);
+        var sunR = Math.max(3, Math.round(H * 0.055));
+        pixelDisc(g, sunX, sunY, sunR + 2, C.sunHalo);
+        pixelDisc(g, sunX, sunY, sunR, C.sun);
+
+        // Clouds.
+        cloud(g, Math.round(W * 0.16), Math.round(H * 0.14), Math.max(6, Math.round(W * 0.055)));
+        cloud(g, Math.round(W * 0.54), Math.round(H * 0.07), Math.max(5, Math.round(W * 0.04)));
+
+        // Two bands of rolling hills behind the field.
+        hills(g, C.hillFar, 0.06, 0.021, 1.3);
+        hills(g, C.hillNear, 0.035, 0.014, 4.1);
+
+        // The field itself.
+        g.fillStyle = C.grassBand;
+        g.fillRect(0, groundY, W, H - groundY);
+        g.fillStyle = C.grassEdge;
+        g.fillRect(0, groundY, W, 1);
+        g.fillStyle = C.soil;
+        g.fillRect(0, H - Math.max(2, Math.round((H - groundY) * 0.28)), W, Math.max(2, Math.round((H - groundY) * 0.28)));
+
+        drawHeading(g);
+    }
+
+    function drawHeading(g) {
+        var sub = 'NOT FOUND';
+        var subW = textWidth(sub, 1);
+        var bigW = textWidth('404', 1);
+
+        // Pick the largest integer scale that still fits, then shrink both lines
+        // together until the pair fits in the sky's upper half.
+        var subScale = Math.max(1, Math.min(12, Math.floor(W * 0.80 / subW)));
+        var bigScale = Math.max(1, Math.min(20, Math.floor(W * 0.55 / bigW)));
+        var gap = Math.max(2, Math.round(bigScale * 0.9));
+
+        var budget = Math.round(groundY * 0.62);
+        while (7 * bigScale + gap + 7 * subScale > budget && (bigScale > 1 || subScale > 1)) {
+            bigScale = Math.max(1, bigScale - 1);
+            subScale = Math.max(1, subScale - 1);
+            gap = Math.max(2, Math.round(bigScale * 0.9));
+        }
+
+        var blockH = 7 * bigScale + gap + 7 * subScale;
+        var top = Math.max(2, Math.round((groundY - blockH) * 0.42));
+
+        drawText(g, '404', W / 2, top, bigScale, C.ink, C.inkSoft);
+        drawText(g, sub, W / 2, top + 7 * bigScale + gap, subScale, C.ink, C.inkSoft);
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Small drawing helpers
+     * ------------------------------------------------------------------ */
+    function mix(a, b, t) {
+        t = Math.max(0, Math.min(1, t));
+        var ar = parseInt(a.slice(1, 3), 16), ag = parseInt(a.slice(3, 5), 16), ab = parseInt(a.slice(5, 7), 16);
+        var br = parseInt(b.slice(1, 3), 16), bgc = parseInt(b.slice(3, 5), 16), bb = parseInt(b.slice(5, 7), 16);
+        var r = Math.round(ar + (br - ar) * t);
+        var gg = Math.round(ag + (bgc - ag) * t);
+        var bl = Math.round(ab + (bb - ab) * t);
+        return 'rgb(' + r + ',' + gg + ',' + bl + ')';
+    }
+
+    function pixelDisc(g, cx, cy, r, color) {
+        g.fillStyle = color;
+        for (var dy = -r; dy <= r; dy++) {
+            for (var dx = -r; dx <= r; dx++) {
+                if (dx * dx + dy * dy <= r * r) {
+                    g.fillRect(cx + dx, cy + dy, 1, 1);
+                }
+            }
+        }
+    }
+
+    function cloud(g, x, y, size) {
+        g.fillStyle = C.cloud;
+        var w = size * 3;
+        var h = Math.max(2, Math.round(size * 0.6));
+        g.fillRect(x, y, w, h);
+        g.fillRect(x + Math.round(w * 0.22), y - Math.max(1, Math.round(h * 0.7)), Math.round(w * 0.42), h);
+        g.fillRect(x + Math.round(w * 0.6), y - Math.max(1, Math.round(h * 0.4)), Math.round(w * 0.3), h);
+    }
+
+    function hills(g, color, base, freq, phase) {
+        g.fillStyle = color;
+        for (var x = 0; x < W; x++) {
+            var h = Math.round(
+                H * base +
+                Math.sin(x * freq + phase) * H * 0.018 +
+                Math.sin(x * freq * 0.37 + phase * 2) * H * 0.012
+            );
+            if (h > 0) {
+                g.fillRect(x, groundY - h, 1, h);
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Animation
+     * ------------------------------------------------------------------ */
+    function mouthX(p) {
+        return mouthStart + p * (mouthEnd - mouthStart);
+    }
+
+    function drawGrass(elapsed) {
+        for (var i = 0; i < blades.length; i++) {
+            var b = blades[i];
+            var k = (elapsed - b.eatAt) / CHEW_MS;
+            if (k >= 1) {
+                continue;   // fully eaten
+            }
+
+            var h = b.h;
+            if (k > 0) {
+                h = Math.max(0, Math.round(b.h * (1 - k)));
+            }
+            if (h <= 0) {
+                continue;
+            }
+
+            ctx.fillStyle = b.dark ? '#4f9c3a' : '#63b84a';
+            ctx.fillRect(b.x, groundY - h, 1, h);
+
+            // A brighter tip catches the eye at this scale.
+            ctx.fillStyle = '#8fd968';
+            ctx.fillRect(b.x, groundY - h, 1, 1);
+        }
+    }
+
+    function drawFlock(elapsed, p) {
+        var lead = Math.round(mouthX(p) - NOSE_OFFSET);
+        var chewing = p < 1;
+
+        for (var i = 0; i < flockSize; i++) {
+            // A one-pixel bob, phase-shifted per sheep, reads as chewing.
+            var bob = 0;
+            if (chewing) {
+                bob = Math.floor(elapsed / 240 + i * 0.7) % 2;
+            }
+            var x = lead - i * 26;
+            var y = groundY - SHEEP_H + bob;
+            ctx.drawImage(sheepSprite, x, y);
+        }
+    }
+
+    function frame() {
+        var elapsed = performance.now() - startedAt;
+        var p = Math.max(0, Math.min(1, elapsed / EAT_MS));
+
+        ctx.drawImage(bg, 0, 0);
+        drawGrass(elapsed);
+        drawFlock(elapsed, p);
+
+        if (!hintEl.textContent && elapsed >= HINT_AT) {
+            hintEl.textContent = strings.hint;
+            // Force a reflow so the opacity transition actually runs on the new text.
+            void hintEl.offsetWidth;
+            hintEl.classList.add('show');
+        }
+
+        if (!redirecting && elapsed >= REDIRECT_AT) {
+            redirecting = true;
+            goHome();
+            return;
+        }
+
+        rafId = window.requestAnimationFrame(frame);
+    }
+
+    function goHome() {
+        if (rafId) {
+            window.cancelAnimationFrame(rafId);
+            rafId = 0;
+        }
+        // replace(), not assign(): the back button should not lead into a dead URL.
+        window.location.replace('/');
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Boot
+     * ------------------------------------------------------------------ */
+    sheepSprite = buildSheepSprite();
+    fit();
+
+    // A resize rebuilds the scene; keep the clock so the 15s budget is not
+    // restarted (it would let the page outlive its own redirect).
+    var resizeTimer = 0;
+    window.addEventListener('resize', function () {
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(fit, 150);
+    });
+
+    if (reduceMotion) {
+        // Honour the preference: paint the finished scene once, then leave sooner.
+        startedAt = performance.now() - EAT_MS;
+        ctx.drawImage(bg, 0, 0);
+        drawGrass(EAT_MS);
+        drawFlock(EAT_MS, 1);
+        hintEl.textContent = strings.hint;
+        hintEl.classList.add('show');
+        window.setTimeout(goHome, 3500);
+    } else {
+        startedAt = performance.now();
+        rafId = window.requestAnimationFrame(frame);
+    }
+})();
+</script>
+</body>
+</html>

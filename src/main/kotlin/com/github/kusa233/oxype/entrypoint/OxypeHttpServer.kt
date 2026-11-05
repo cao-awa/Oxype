@@ -25,9 +25,14 @@ import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.manager.SessionManager
 import com.github.kusa233.oxype.user.StyleSources
 import com.github.kusa233.oxype.user.User
+import com.github.kusa233.oxype.user.UserSettings
+import com.github.kusa233.oxype.user.accentPref
 import com.github.kusa233.oxype.user.cssSource
 import com.github.kusa233.oxype.user.htmlSource
+import com.github.kusa233.oxype.user.inputFormatPref
 import com.github.kusa233.oxype.user.jsSource
+import com.github.kusa233.oxype.user.langPref
+import com.github.kusa233.oxype.user.themePref
 import com.github.kusa233.oxype.user.manager.UserManager
 import io.netty.handler.codec.http.HttpResponseStatus
 import org.apache.logging.log4j.LogManager
@@ -471,6 +476,69 @@ object OxypeHttpServer {
         throw IllegalStateException("Unreachable: the request was aborted")
     }
 
+    /**
+     * Caller-visible view of a user's interface preferences.
+     *
+     * The stored values and the accepted alternatives are both sent, so the client
+     * neither hardcodes the lists nor has to guess what an empty preference falls
+     * back to.
+     *
+     * The four values are returned exactly as stored, empty included. Empty is a
+     * meaningful answer — "this account has no opinion" — and the client must be able
+     * to tell it apart from a deliberate choice of the default, because that is what
+     * decides whether a browser's existing local preference may be adopted into the
+     * account. The defaults are reported separately, so the client does not have to
+     * carry its own copy of them.
+     */
+    private fun settingsView(user: User): JSONObject {
+        return JSONObject {
+            "lang" set user.langPref
+            "theme" set user.themePref
+            "accent" set user.accentPref
+            "inputFormat" set user.inputFormatPref
+            "languages" set JSONArray().apply {
+                UserSettings.LANGUAGES.forEach { add(it) }
+            }
+            "themes" set JSONArray().apply {
+                UserSettings.THEMES.forEach { add(it) }
+            }
+            "accents" set JSONArray().apply {
+                UserSettings.ACCENTS.forEach { add(it) }
+            }
+            "inputFormats" set JSONArray().apply {
+                UserSettings.INPUT_FORMATS.forEach { add(it) }
+            }
+            "defaultLang" set UserSettings.DEFAULT_LANG
+            "defaultInputFormat" set UserSettings.DEFAULT_INPUT_FORMAT
+            "maxLength" set UserSettings.MAX_LENGTH
+        }
+    }
+
+    /**
+     * Rejects an unacceptable preference with a 400 naming the offending field.
+     *
+     * Same contract as [assertValidStyleSource]: an invalid value is refused at the
+     * request rather than stored and silently ignored on the next read.
+     */
+    private fun assertValidPreference(field: String, value: String, valid: Boolean, allowed: Collection<String>, context: KalmiaHttpContext) {
+        if (valid) {
+            return
+        }
+        val reason = if (value.trim().length > UserSettings.MAX_LENGTH) {
+            "must be at most ${UserSettings.MAX_LENGTH} characters"
+        } else {
+            "must be empty or one of ${allowed.joinToString(", ")}"
+        }
+        with(context) {
+            abortWith(
+                IllegalArgumentException("Invalid '$field': $reason"),
+                HttpResponseStatus.BAD_REQUEST,
+                this
+            )
+        }
+        throw IllegalStateException("Unreachable: the request was aborted")
+    }
+
     @JvmStatic
     fun start() {
         KalmiaHttpService.start(http {
@@ -626,6 +694,105 @@ object OxypeHttpServer {
                                 throw IllegalStateException("Unreachable: the request was aborted")
                             }
                             styleSourcesView(updated)
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Returns the caller's interface preferences.
+             *
+             * Sent with the accepted value lists so the settings UI can be built from
+             * the server's own vocabulary instead of a second copy in the client.
+             */
+            route("getSettings/{userid}") {
+                val userid by placeholder<Long>("userid")
+                get {
+                    requireUserFromQuery { caller ->
+                        val user = UserManager.getUser(userid)
+                        if (user == null || caller.id != userid) {
+                            abortWith(
+                                IllegalArgumentException("User not found"),
+                                HttpResponseStatus.NOT_FOUND,
+                                this
+                            )
+                        } else {
+                            settingsView(user)
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Stores the caller's interface preferences.
+             *
+             * Each field is optional and absent means "leave this preference alone", so
+             * a client can send only what the user changed. An explicitly empty value
+             * clears the preference, which is the state every account is in before it
+             * first saves this form. A non-empty value must appear in the matching
+             * allow-list in [UserSettings], so anything persisted is always applicable.
+             *
+             * The style-source fields are untouched here, so saving preferences can
+             * never clear a custom front end.
+             */
+            route("updateSettings/{userid}") {
+                val userid by placeholder<Long>("userid")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { caller ->
+                            if (caller.id != userid) {
+                                abortWith(
+                                    AuthenticationException("You can only change your own settings"),
+                                    HttpResponseStatus.FORBIDDEN,
+                                    this
+                                )
+                            }
+
+                            // `null` means the key was absent, which is different from
+                            // an empty string: the former keeps the stored value, the
+                            // latter clears it.
+                            val lang = json.getString("lang")
+                            val theme = json.getString("theme")
+                            val accent = json.getString("accent")
+                            val inputFormat = json.getString("inputFormat")
+
+                            if (lang != null) {
+                                assertValidPreference(
+                                    "lang", lang, UserSettings.isValidLang(lang),
+                                    UserSettings.LANGUAGES, this
+                                )
+                            }
+                            if (theme != null) {
+                                assertValidPreference(
+                                    "theme", theme, UserSettings.isValidTheme(theme),
+                                    UserSettings.THEMES, this
+                                )
+                            }
+                            if (accent != null) {
+                                assertValidPreference(
+                                    "accent", accent, UserSettings.isValidAccent(accent),
+                                    UserSettings.ACCENTS, this
+                                )
+                            }
+                            if (inputFormat != null) {
+                                assertValidPreference(
+                                    "inputFormat", inputFormat, UserSettings.isValidInputFormat(inputFormat),
+                                    UserSettings.INPUT_FORMATS, this
+                                )
+                            }
+
+                            val updated = UserManager.updateSettings(userid, lang, theme, accent, inputFormat)
+                            if (updated == null) {
+                                abortWith(
+                                    IllegalArgumentException("User not found"),
+                                    HttpResponseStatus.NOT_FOUND,
+                                    this
+                                )
+                                // abortWith always throws; this keeps `updated` non-null
+                                // for the type checker.
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+                            settingsView(updated)
                         }
                     }
                 }
@@ -940,8 +1107,6 @@ object OxypeHttpServer {
                             if (end in (receivedMessageSeq + 1)..<maxSeq) {
                                 MessageManager.setReceivedMessageSeq(userid, sessionId, end)
                             }
-
-                            println("$start:$end - $userid")
 
                             JSONArray {
                                 MessageManager.getMessages(sessionId, start, end).forEach {
