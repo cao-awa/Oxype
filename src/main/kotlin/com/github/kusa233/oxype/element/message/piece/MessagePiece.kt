@@ -13,6 +13,9 @@ abstract class MessagePiece {
             registerCodec(MessageMarkdownPiece.TYPE) {
                 MessageMarkdownPiece.decode(it)
             }
+            registerCodec(MessageReplyPiece.TYPE) {
+                MessageReplyPiece.decode(it)
+            }
         }
 
         fun registerCodec(name: String, decoder: (JSONObject) -> MessagePiece) {

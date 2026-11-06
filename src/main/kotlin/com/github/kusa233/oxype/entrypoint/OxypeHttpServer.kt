@@ -12,10 +12,11 @@ import com.github.kusa233.kalmia.server.network.http.builder.http
 import com.github.kusa233.kalmia.server.network.http.context.KalmiaHttpContext
 import com.github.kusa233.kalmia.server.network.http.entrypoint.service.KalmiaHttpService
 import com.github.kusa233.kalmia.server.network.http.placeholder.url.type.placeholder
+import com.github.kusa233.oxype.element.message.Message
 import com.github.kusa233.oxype.element.message.piece.MessageMarkdownPiece
 import com.github.kusa233.oxype.element.message.piece.MessagePiece
 import com.github.kusa233.oxype.element.message.piece.MessagePieces
-import com.github.kusa233.oxype.entrypoint.OxypeWebSocketServer
+import com.github.kusa233.oxype.element.message.piece.MessageReplyPiece
 import com.github.kusa233.oxype.element.message.piece.MessageTextPiece
 import com.github.kusa233.oxype.exception.body.NeedJsonBodyException
 import com.github.kusa233.oxype.exception.login.AuthenticationException
@@ -246,6 +247,95 @@ object OxypeHttpServer {
                 throw IllegalStateException("Unreachable: the request was aborted")
             }
         }
+    }
+
+    /**
+     * The plain text of a message body, with every body piece concatenated.
+     *
+     * Only the text and markdown pieces carry words; a reply piece carries a
+     * quotation of *another* message and contributes nothing here, which is what
+     * keeps a conversation preview from showing a quotation instead of the reply.
+     * Encountering an unknown piece type is not an error: it is simply skipped, so a
+     * record written by a newer build still previews on an older one.
+     */
+    fun messageText(message: Message): String {
+        return message.pieces.pieces.joinToString("") { piece ->
+            when (piece) {
+                is MessageTextPiece -> piece.text
+                is MessageMarkdownPiece -> piece.text
+                else -> ""
+            }
+        }
+    }
+
+    /**
+     * Validates the reply quotation in a `pieces` array and fills it in from storage.
+     *
+     * A client only has to send `{"type":"reply","messageId":N}` as the first piece.
+     * Everything descriptive about the quotation — who wrote it, under what name, and
+     * what it said — is read from the stored message here, so a request cannot put
+     * words into another user's mouth by inventing a `text` field. That also means a
+     * quotation always matches the message it points at, as it stood when the reply
+     * was written, even if that message is edited later.
+     *
+     * The reply piece must come first; the body pieces follow it in the usual way.
+     * Returns a new array holding the enriched pieces.
+     */
+    fun KalmiaHttpContext.enrichReplyPieces(piecesJson: JSONArray, sessionId: Long): JSONArray {
+        val enriched = JSONArray {}
+
+        // Counted by hand: Cason's JSONArray exposes only forEach, with no index.
+        var index = 0
+        piecesJson.forEach { element ->
+            val piece = element as JSONObject
+            val position = index
+            index += 1
+
+            if (piece.getString("type") != MessageReplyPiece.TYPE) {
+                enriched.add(piece)
+                return@forEach
+            }
+
+            // "First piece is the quotation, the rest is the body" is the whole shape
+            // of a reply. A quotation in the middle would be rendered as a bubble
+            // caption under text it does not follow, so it is refused rather than
+            // quietly moved.
+            if (position != 0) {
+                abortWith(
+                    MissingParameterException("A 'reply' piece must be the first piece"),
+                    HttpResponseStatus.BAD_REQUEST,
+                    this
+                )
+                throw IllegalStateException("Unreachable: the request was aborted")
+            }
+
+            val quotedId = assertLong(piece.longValue("messageId"), "messageId")
+            val quoted = MessageManager.getMessage(sessionId, quotedId)
+            if (quoted == null) {
+                // The reply would otherwise become a pointer to nothing, so it is
+                // refused at the point where the author can still retry against a
+                // message that exists.
+                abortWith(
+                    MissingParameterException("Message $quotedId to reply to was not found"),
+                    HttpResponseStatus.NOT_FOUND,
+                    this
+                )
+                throw IllegalStateException("Unreachable: the request was aborted")
+            }
+
+            val quotedUser = UserManager.getUser(quoted.sender)
+            enriched.add(
+                JSONObject {
+                    "type" set MessageReplyPiece.TYPE
+                    "messageId" set quotedId
+                    "sender" set quoted.sender
+                    "senderName" set (quotedUser?.username ?: "User #${quoted.sender}")
+                    "text" set messageText(quoted)
+                }
+            )
+        }
+
+        return enriched
     }
 
     /**
@@ -1210,7 +1300,7 @@ object OxypeHttpServer {
                             val seq = MessageManager.sendMessage(
                                 sessionId,
                                 sender,
-                                MessagePieces.decode(piecesJson)
+                                MessagePieces.decode(enrichReplyPieces(piecesJson, sessionId))
                             )
 
                             // Publish only after persistence succeeds, using canonical JSON.
@@ -1268,7 +1358,7 @@ object OxypeHttpServer {
                             val edited = MessageManager.editMessage(
                                 sessionId,
                                 messageId,
-                                MessagePieces.decode(piecesJson)
+                                MessagePieces.decode(enrichReplyPieces(piecesJson, sessionId))
                             )
 
                             // Publish after persistence, from the stored record, so every
@@ -1413,15 +1503,10 @@ object OxypeHttpServer {
                             } else {
                                 // Both body pieces contribute to the preview. Matching
                                 // only on MessageTextPiece left a Markdown-only message
-                                // with a blank second line in the conversation list.
-                                val text = lastMsg.pieces.pieces
-                                    .joinToString("") { piece ->
-                                        when (piece) {
-                                            is MessageTextPiece -> piece.text
-                                            is MessageMarkdownPiece -> piece.text
-                                            else -> ""
-                                        }
-                                    }
+                                // with a blank second line in the conversation list. A
+                                // reply's quotation is excluded: the preview should show
+                                // what the sender said, not what they were answering.
+                                val text = messageText(lastMsg)
                                 val senderUser = UserManager.getUser(lastMsg.sender)
                                 val senderName = senderUser?.username ?: "User #${lastMsg.sender}"
                                 JSONObject {

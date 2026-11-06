@@ -230,6 +230,27 @@
     const LONG_PRESS_MS = 500;
     const LONG_PRESS_SLOP = 10;
 
+    // The message the next send answers, if any. Replying belongs to the composer
+    // rather than to a message: it survives editing the draft and is cleared by
+    // sending, cancelling, or leaving the conversation. Only the id is authoritative;
+    // the name and body are kept so the bar's label can be drawn without asking the
+    // server about a message already on screen.
+    let replyTarget = null;
+    // The strip above the composer announcing the pending reply. Built here rather
+    // than read from the page, because a user-supplied chat.html will not contain
+    // markup added later.
+    let replyBarEl = null;
+    // A leftward drag along a row on a touch screen. Kept apart from the long-press
+    // state because the two gestures start identically and only separate once the
+    // finger has travelled far enough to have a direction.
+    let swipeState = null;
+    const REPLY_SWIPE_TRIGGER_PX = 64;
+    const REPLY_SWIPE_MAX_PX = 96;
+    // A swipe has to be decisively sideways before it counts. Anything shallower is a
+    // scroll that wobbled, and answering it with a reply would be a false positive.
+    const REPLY_SWIPE_AXIS_RATIO = 1.4;
+    const REPLY_JUMP_MAX_PAGES = 20;
+
     // Mobile drawer. On a narrow screen the rail covers the conversation, so it is only
     // on screen when it was asked for. Both the toggle and the scrim are built here
     // rather than read from the page, because a user-supplied chat.html will not contain
@@ -332,7 +353,7 @@
      * never reinterpreted as markup.
      *
      * @param {Object} msg
-     * @returns {{text: string, format: 'text'|'markdown'}}
+     * @returns {{text: string, format: 'text'|'markdown', reply: Object|null}}
      */
     function bodyOfMessage(msg) {
         if (Array.isArray(msg.pieces)) {
@@ -342,11 +363,40 @@
             const source = (markdown.length > 0 ? markdown : msg.pieces.filter(p => p && p.type === 'text'))
                 .map(p => (typeof p.text === 'string' ? p.text : ''))
                 .join('');
-            return { text: source, format: markdown.length > 0 ? 'markdown' : 'text' };
+            return {
+                text: source,
+                format: markdown.length > 0 ? 'markdown' : 'text',
+                // The quotation is carried by the message, not derived from it, and it is
+                // reported beside the body rather than inside it: it is context for the
+                // words, not part of them. Anything that only wants the words (a rail
+                // preview, the editor's seed text) therefore gets them alone.
+                reply: replyPieceOf(msg.pieces)
+            };
         }
-        if (typeof msg.pieces === 'string') return { text: msg.pieces, format: 'text' };
-        if (typeof msg.text === 'string') return { text: msg.text, format: 'text' };
-        return { text: '', format: 'text' };
+        if (typeof msg.pieces === 'string') return { text: msg.pieces, format: 'text', reply: null };
+        if (typeof msg.text === 'string') return { text: msg.text, format: 'text', reply: null };
+        return { text: '', format: 'text', reply: null };
+    }
+
+    /**
+     * Reads the quotation out of a reply's pieces.
+     *
+     * The server fills in the quoted sender and words when the reply is written, so
+     * they are already here and no lookup is needed to draw the quotation.
+     * @param {Array<Object>} pieces
+     * @returns {{messageId: string, sender: string, senderName: string, text: string}|null}
+     */
+    function replyPieceOf(pieces) {
+        const piece = pieces.find(p => p && p.type === 'reply');
+        if (!piece) return null;
+        const quotedId = piece.messageId !== undefined && piece.messageId !== null ? String(piece.messageId) : '';
+        if (!quotedId) return null;
+        return {
+            messageId: quotedId,
+            sender: piece.sender !== undefined && piece.sender !== null ? String(piece.sender) : '',
+            senderName: typeof piece.senderName === 'string' && piece.senderName ? piece.senderName : '',
+            text: typeof piece.text === 'string' ? piece.text : ''
+        };
     }
 
     /**
@@ -526,6 +576,207 @@
             .trim();
     }
 
+    // ------------------------------------------------------------- replies -----
+
+    /**
+     * Renders the quotation block above a reply's body.
+     *
+     * The block is a button, not a div, because its whole purpose is to be pressed:
+     * that makes it keyboard-reachable and announces it as something that acts.
+     * Absent a quotation (not a reply at all) it emits nothing, so a plain message's
+     * markup is unchanged.
+     * @param {{messageId: string, senderName: string, text: string}|null} reply
+     * @returns {string} HTML, already escaped
+     */
+    function renderReplyQuote(reply) {
+        if (!reply || !reply.messageId) return '';
+        const name = reply.senderName || getI18nText('chat.replyQuoteUnknownSender', 'a message');
+        const body = previewOfBody(reply.text);
+        // The body is clipped by CSS rather than truncated here, so the full text is
+        // still in the markup for a screen reader and for find-in-page.
+        return `<button type="button" class="message-reply-quote" data-reply-to="${escapeHtml(reply.messageId)}"`
+            + ` title="${escapeHtml(getI18nText('chat.replyJumpTitle', 'Jump to the quoted message'))}">`
+            + `<span class="message-reply-quote-name">${escapeHtml(name)}</span>`
+            + `<span class="message-reply-quote-text">${escapeHtml(body)}</span>`
+            + `</button>`;
+    }
+
+    /**
+     * Scrolls a row into view and flashes it, so the eye can find it.
+     *
+     * The flash is a class with a CSS animation; it is removed when the animation
+     * ends rather than on a timer, so a row re-rendered mid-flash cannot be left
+     * permanently highlighted.
+     * @param {HTMLElement} row
+     */
+    function revealMessageRow(row) {
+        if (!row) return;
+        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        row.classList.remove('is-reply-target');
+        // Reading offsetWidth forces a style recalculation, which restarts the
+        // animation when the same row is jumped to twice in a row.
+        void row.offsetWidth;
+        row.classList.add('is-reply-target');
+        const clear = () => {
+            row.classList.remove('is-reply-target');
+            row.removeEventListener('animationend', clear);
+        };
+        row.addEventListener('animationend', clear);
+    }
+
+    /**
+     * Brings the quoted message on screen, paging history in if it is not loaded yet.
+     *
+     * A quotation can point arbitrarily far back, and only the newest window of the
+     * transcript is in the DOM, so a jump that gave up whenever the row was absent
+     * would fail for exactly the messages a reply is most likely to quote.
+     * @param {string} messageId
+     * @returns {Promise<boolean>} whether the row was found and revealed
+     */
+    async function jumpToMessage(messageId) {
+        if (!messageId || !messagesContainerEl) return false;
+        const existing = findMessageRow(messageId);
+        if (existing) {
+            revealMessageRow(existing);
+            return true;
+        }
+
+        const sessionId = activeSessionId;
+        for (let page = 0; page < REPLY_JUMP_MAX_PAGES; page += 1) {
+            if (historyReachedTop || historyOldestSeq === null) break;
+            // A page already in flight makes loadOlderMessages return at once without
+            // loading anything, so wait for it to settle first; otherwise the loop
+            // would spend its whole budget on a single real request.
+            if (historyPageInFlight) {
+                await new Promise(resolve => window.setTimeout(resolve, 50));
+                if (activeSessionId !== sessionId) return false;
+                page -= 1;
+                continue;
+            }
+            await loadOlderMessages();
+            // The conversation can be switched from under the jump.
+            if (activeSessionId !== sessionId) return false;
+            const found = findMessageRow(messageId);
+            if (found) {
+                // The page lands above the viewport, so the jump is what makes it
+                // visible; without this the reader would be left where they were.
+                revealMessageRow(found);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Click handler for a quotation block: jumps back to the message it quotes. */
+    async function handleReplyQuoteClick(e) {
+        const quote = e.target && e.target.closest ? e.target.closest('.message-reply-quote') : null;
+        if (!quote || !messagesContainerEl || !messagesContainerEl.contains(quote)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const messageId = quote.dataset.replyTo;
+        if (!messageId) return;
+        const found = await jumpToMessage(messageId);
+        if (!found) {
+            toast(getI18nText('chat.replyJumpFailed', 'That message is no longer reachable.'), 'error');
+        }
+    }
+
+    /**
+     * Builds the strip above the composer that announces the pending reply.
+     *
+     * One element is reused across replies, styled by the classic sheet, and hidden
+     * by default so a page that never replies is laid out exactly as before.
+     * @returns {HTMLElement}
+     */
+    function ensureReplyBar() {
+        if (replyBarEl) return replyBarEl;
+
+        const bar = document.createElement('div');
+        bar.className = 'reply-bar';
+        bar.style.display = 'none';
+
+        const text = document.createElement('div');
+        text.className = 'reply-bar-text';
+
+        const label = document.createElement('span');
+        label.className = 'reply-bar-label';
+
+        const preview = document.createElement('span');
+        preview.className = 'reply-bar-preview';
+
+        text.appendChild(label);
+        text.appendChild(preview);
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'reply-bar-cancel';
+        // A glyph rather than a word: the bar sits above the composer and a translated
+        // "Cancel reply" beside every draft would take more room than the draft.
+        cancelBtn.textContent = '\u00d7';
+        cancelBtn.setAttribute('aria-label', getI18nText('chat.replyBarCancel', 'Cancel reply'));
+        cancelBtn.title = getI18nText('chat.replyBarCancel', 'Cancel reply');
+        cancelBtn.addEventListener('click', () => clearReplyTarget());
+
+        bar.appendChild(text);
+        bar.appendChild(cancelBtn);
+
+        // Placed inside the composer's own stack, directly above the input row: the
+        // composer is the element that owns "what the next send will be".
+        const composer = document.getElementById('chatComposer');
+        const anchor = composer || (messageInputEl ? messageInputEl.parentNode : null);
+        if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(bar, anchor);
+        } else {
+            document.body.appendChild(bar);
+        }
+
+        replyBarEl = bar;
+        return bar;
+    }
+
+    /** Starts replying to a message, i.e. arms the composer with a quotation. */
+    function startReplyToMessage(row) {
+        if (!row || !row.dataset.messageId) return;
+        // What is quoted is the message the reader pointed at: its own words and its
+        // own author. Replying to a reply therefore quotes that reply, not the message
+        // it in turn quoted; the nested quotation is context for a different claim.
+        const body = row.oxypeMessage && typeof row.oxypeMessage.text === 'string'
+            ? row.oxypeMessage.text
+            : '';
+        replyTarget = {
+            messageId: String(row.dataset.messageId),
+            senderName: row.dataset.senderName || '',
+            text: body
+        };
+
+        const bar = ensureReplyBar();
+        const labelEl = bar.querySelector('.reply-bar-label');
+        const previewEl = bar.querySelector('.reply-bar-preview');
+        const name = replyTarget.senderName || getI18nText('chat.replyQuoteUnknownSender', 'a message');
+        if (labelEl) {
+            labelEl.textContent = getI18nText('chat.replyBarLabel', `Replying to ${name}`, { name: name });
+        }
+        if (previewEl) {
+            previewEl.textContent = previewOfBody(body).slice(0, 140);
+        }
+        bar.style.display = '';
+        // The next thing the user does is type, so the caret goes where they were
+        // about to look anyway. Deferred: the bar's layout has just changed and
+        // focusing mid-frame would scroll the new element into view instead.
+        if (messageInputEl) {
+            window.requestAnimationFrame(() => {
+                messageInputEl.focus();
+                autoGrowComposer();
+            });
+        }
+    }
+
+    /** Drops the pending reply and hides the bar, leaving the typed draft alone. */
+    function clearReplyTarget() {
+        replyTarget = null;
+        if (replyBarEl) replyBarEl.style.display = 'none';
+    }
+
     // ---------------------------------------------------- message actions ------
 
     /**
@@ -577,6 +828,22 @@
         return canEditMessage(row) || canDeleteMessage(row);
     }
 
+    /**
+     * Whether this row is something the viewer can reply to.
+     *
+     * Nearly every message is: the only requirement is a server id to quote. Replying
+     * is deliberately not tied to authorship or moderation — it is how a conversation
+     * is conducted, not an action taken on someone's message.
+     */
+    function canReplyToMessage(row) {
+        return !!(row && row.dataset.messageId);
+    }
+
+    /** Whether the action menu should open for this row at all. */
+    function canOpenMessageMenu(row) {
+        return canModifyMessage(row) || canReplyToMessage(row);
+    }
+
     /** Builds the shared menu once; later right-clicks only relabel it and move it. */
     function ensureMessageMenu() {
         if (messageMenuEl) return messageMenuEl;
@@ -585,6 +852,12 @@
         menu.className = 'message-menu';
         menu.setAttribute('role', 'menu');
         menu.style.display = 'none';
+
+        const replyBtn = document.createElement('button');
+        replyBtn.type = 'button';
+        replyBtn.className = 'message-menu-item';
+        replyBtn.dataset.action = 'reply';
+        replyBtn.setAttribute('role', 'menuitem');
 
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
@@ -598,6 +871,10 @@
         deleteBtn.dataset.action = 'delete';
         deleteBtn.setAttribute('role', 'menuitem');
 
+        // Reply leads: it is the only entry available on every message, so the menu
+        // has a stable first item instead of starting with whichever action this
+        // viewer happens to have on this row.
+        menu.appendChild(replyBtn);
         menu.appendChild(editBtn);
         menu.appendChild(deleteBtn);
 
@@ -609,7 +886,8 @@
             const row = messageMenuTargetRow;
             closeMessageMenu();
             if (!row) return;
-            if (item.dataset.action === 'edit') startMessageEdit(row);
+            if (item.dataset.action === 'reply') startReplyToMessage(row);
+            else if (item.dataset.action === 'edit') startMessageEdit(row);
             else if (item.dataset.action === 'delete') handleDeleteMessage(row);
         });
 
@@ -625,11 +903,17 @@
 
         // Labels are looked up on every open, so a language change made while the menu
         // was closed is reflected the next time it appears.
+        const replyBtn = menu.querySelector('[data-action="reply"]');
         const editBtn = menu.querySelector('[data-action="edit"]');
         const deleteBtn = menu.querySelector('[data-action="delete"]');
+        if (replyBtn) replyBtn.textContent = getI18nText('chat.replyBtn', 'Reply');
         if (editBtn) editBtn.textContent = getI18nText('chat.messageEditBtn', 'Edit');
         if (deleteBtn) deleteBtn.textContent = getI18nText('chat.messageDeleteBtn', 'Delete');
 
+        // Reply is offered on every message, including one this viewer may neither
+        // rewrite nor retract, so it is shown on its own terms rather than as part of
+        // the moderation split below.
+        if (replyBtn) replyBtn.style.display = canReplyToMessage(row) ? '' : 'none';
         // Editing is the author's alone, so a moderator looking at someone else's
         // message gets only the delete entry.
         if (editBtn) editBtn.style.display = canEditMessage(row) ? '' : 'none';
@@ -666,22 +950,55 @@
         const row = e.target && e.target.closest ? e.target.closest('.message-row') : null;
         if (!row || !messagesContainerEl.contains(row)) return;
         if (!row.dataset.messageId) return;
-        if (!canModifyMessage(row)) return;
+        // Replying is open to every message, so the menu is no longer limited to rows
+        // this viewer may edit or delete; those entries hide themselves instead.
+        if (!canOpenMessageMenu(row)) return;
         e.preventDefault();
         if (editingRow === row) return;
         // Chrome on Android already reports a long press as a context menu, so the
         // touch timer that mirrors it on iOS has to stand down or the menu is opened
         // twice for one press.
         cancelLongPress();
+        cancelReplySwipe();
         openMessageMenu(row, e.clientX, e.clientY);
     }
 
     /**
-     * Starts the long-press timer on a message row.
+     * Double-click handler for the message list: replies to the row under the pointer.
+     *
+     * The desktop counterpart of the touch swipe. It stands down while a row is being
+     * edited, where a double click selects a word rather than acting on the message.
+     */
+    function handleMessageDoubleClick(e) {
+        if (!messagesContainerEl) return;
+        const row = e.target && e.target.closest ? e.target.closest('.message-row') : null;
+        if (!row || !messagesContainerEl.contains(row)) return;
+        if (editingRow === row) return;
+        // A double click on the quotation is a jump, not a reply: the quote's own
+        // click handler has already claimed it.
+        if (e.target && e.target.closest && e.target.closest('.message-reply-quote')) return;
+        if (!canReplyToMessage(row)) return;
+        // Selecting text inside a message is a common way to read or copy it, and a
+        // double click is how a word gets selected. Only an unselected double click
+        // is taken as "reply to this".
+        const selection = window.getSelection ? window.getSelection() : null;
+        if (selection && !selection.isCollapsed) return;
+        e.preventDefault();
+        startReplyToMessage(row);
+    }
+
+    /**
+     * Starts the long-press timer on a message row, and arms the reply swipe.
      *
      * A touch screen has no right button, so the same menu is raised by holding a
      * finger down. The press only counts if the finger stays roughly still: a scroll
      * begins with a touch too, and opening a menu in the middle of one would be wrong.
+     *
+     * The same touch may instead become a leftward swipe, and which one it is cannot
+     * be known until the finger has moved. Both are therefore armed here and the
+     * first to pass its threshold claims the gesture: [handleMessageTouchMove]
+     * cancels the press the moment the finger travels, and the swipe cancels itself
+     * if the finger goes down rather than sideways.
      */
     function handleMessageTouchStart(e) {
         if (!messagesContainerEl) return;
@@ -689,6 +1006,7 @@
         const row = e.target && e.target.closest ? e.target.closest('.message-row') : null;
         if (!row || !messagesContainerEl.contains(row)) return;
         cancelLongPress();
+        cancelReplySwipe();
         const touch = e.touches[0];
         longPressStart = { x: touch.clientX, y: touch.clientY, row, x2: touch.clientX };
         longPressTimer = window.setTimeout(() => {
@@ -699,10 +1017,22 @@
             // The guards are re-checked here because the row may have been re-rendered
             // or had its id removed during the press.
             if (!start.row.isConnected || !start.row.dataset.messageId) return;
-            if (!canModifyMessage(start.row)) return;
+            if (!canOpenMessageMenu(start.row)) return;
             if (editingRow === start.row) return;
+            // A press that has become a swipe has already been claimed by it.
+            if (swipeState) return;
             openMessageMenu(start.row, start.x2, start.y);
         }, LONG_PRESS_MS);
+
+        if (row.dataset.messageId) {
+            swipeState = {
+                row,
+                startX: touch.clientX,
+                startY: touch.clientY,
+                axis: null,
+                offset: 0
+            };
+        }
     }
 
     /** Abandons a pending long press, e.g. because the finger moved or lifted. */
@@ -715,22 +1045,80 @@
     }
 
     /**
-     * Tracks finger movement while it is down, and cancels the press once it travels
-     * further than a finger wobbles on the same spot.
+     * Tracks finger movement while it is down, and drives the reply swipe.
+     *
+     * The press is cancelled once the finger travels further than it wobbles on one
+     * spot. The same movement may turn the touch into a reply swipe: travelling
+     * mostly sideways is a swipe, travelling mostly vertically is a scroll, and the
+     * direction is decided once and then held so a gesture cannot flip halfway.
      */
     function handleMessageTouchMove(e) {
-        if (!longPressStart) return;
         if (!e.touches || e.touches.length !== 1) {
             cancelLongPress();
+            cancelReplySwipe();
             return;
         }
         const touch = e.touches[0];
+
+        if (swipeState) {
+            const dx = touch.clientX - swipeState.startX;
+            const dy = touch.clientY - swipeState.startY;
+            if (swipeState.axis === null) {
+                if (Math.abs(dx) < LONG_PRESS_SLOP && Math.abs(dy) < LONG_PRESS_SLOP) return;
+                const horizontal = Math.abs(dx) > Math.abs(dy) * REPLY_SWIPE_AXIS_RATIO;
+                // A swipe only ever pulls to the left, so rightward travel is a scroll
+                // in disguise and is left to the transcript.
+                swipeState.axis = (horizontal && dx < 0) ? 'x' : 'y';
+                if (swipeState.axis === 'y') {
+                    cancelReplySwipe();
+                } else {
+                    // The gesture is a swipe now, so the press racing it must not fire.
+                    cancelLongPress();
+                    swipeState.row.classList.add('is-swipe-armed');
+                }
+            }
+            if (swipeState && swipeState.axis === 'x') {
+                // Damped past the trigger point so the row stops following the finger
+                // once the gesture has succeeded, which reads as a limit.
+                const pulled = Math.min(Math.abs(dx), REPLY_SWIPE_MAX_PX);
+                swipeState.offset = pulled;
+                swipeState.row.style.setProperty('--reply-swipe-offset', `${pulled}px`);
+                swipeState.row.classList.toggle('is-swipe-ready', pulled >= REPLY_SWIPE_TRIGGER_PX);
+            }
+            return;
+        }
+
+        if (!longPressStart) return;
         // Remember where the finger is, so a menu that fires later still appears under
         // it rather than where the press began.
         longPressStart.x2 = touch.clientX;
         const dx = touch.clientX - longPressStart.x;
         const dy = touch.clientY - longPressStart.y;
         if (Math.hypot(dx, dy) > LONG_PRESS_SLOP) cancelLongPress();
+    }
+
+    /** Ends a swipe: replies if it passed the trigger distance, and resets the row. */
+    function handleMessageTouchEnd(e) {
+        cancelLongPress();
+        const state = swipeState;
+        if (!state) return;
+        const pulled = state.offset;
+        const armed = state.axis === 'x' && pulled >= REPLY_SWIPE_TRIGGER_PX;
+        cancelReplySwipe();
+        if (!armed) return;
+        if (editingRow === state.row) return;
+        if (!canReplyToMessage(state.row)) return;
+        if (e && typeof e.preventDefault === 'function') e.preventDefault();
+        startReplyToMessage(state.row);
+    }
+
+    /** Drops any swipe in progress and puts the row back where it belongs. */
+    function cancelReplySwipe() {
+        const state = swipeState;
+        swipeState = null;
+        if (!state || !state.row) return;
+        state.row.classList.remove('is-swipe-armed', 'is-swipe-ready');
+        state.row.style.removeProperty('--reply-swipe-offset');
     }
 
     /** Finds the row for a server message id, if it is on screen. */
@@ -791,7 +1179,15 @@
             contentEl.innerHTML = renderMessageBody(body.text, body.format);
             contentEl.classList.toggle('message-content-markdown', body.format === 'markdown');
         }
-        row.oxypeMessage = { text: body.text, format: body.format === 'markdown' ? 'markdown' : 'text' };
+        // An edit rewrites the words, not what they answer. The quotation is left as
+        // it is when the payload does not carry one, which is the case for an edit
+        // that only revised the body.
+        const bubble = row.querySelector('.message-bubble');
+        const existingQuote = row.querySelector('.message-reply-quote');
+        if (bubble && body.reply && existingQuote) {
+            existingQuote.outerHTML = renderReplyQuote(body.reply);
+        }
+        row.oxypeMessage = { text: body.text, format: body.format === 'markdown' ? 'markdown' : 'text', reply: body.reply || (row.oxypeMessage && row.oxypeMessage.reply) || null };
         markMessageEdited(row);
     }
 
@@ -903,11 +1299,18 @@
         const format = row.oxypeMessage && row.oxypeMessage.format === 'markdown' ? 'markdown' : 'text';
         const stored = auth();
         const userId = currentUserId();
+        // A reply stays a reply: the edit replaces the words and keeps the quotation,
+        // so revising a sentence cannot silently detach it from what it answered. The
+        // server re-derives the quoted text from storage, so only the id is resent.
+        const reply = row.oxypeMessage && row.oxypeMessage.reply ? row.oxypeMessage.reply : null;
+        const content = reply
+            ? [{ type: 'reply', messageId: reply.messageId }, { type: format, text: text }]
+            : text;
 
         if (saveBtn) saveBtn.disabled = true;
         try {
             const res = await window.OxypeCore.editMessage(
-                activeSessionId, messageId, text, userId, stored ? stored.token : null, format
+                activeSessionId, messageId, content, userId, stored ? stored.token : null, format
             );
             const edited = res && res.success === true ? res.message : null;
             if (!edited) {
@@ -1230,14 +1633,20 @@
         if (chatComposerEl) chatComposerEl.addEventListener('submit', handleSendMessage);
         if (dialogOverlayEl) dialogOverlayEl.addEventListener('click', closeAllDialogs);
 
-        // Right-click on a message row offers edit and delete for it
+        // Right-click on a message row offers reply, and edit and delete where the
+        // viewer is allowed them
         if (messagesContainerEl) {
             messagesContainerEl.addEventListener('contextmenu', handleMessageContextMenu);
-            // A touch screen has no right button, so holding a row raises the same menu.
+            // A touch screen has no right button, so holding a row raises the same menu,
+            // and dragging a row to the left answers it.
             messagesContainerEl.addEventListener('touchstart', handleMessageTouchStart, { passive: true });
             messagesContainerEl.addEventListener('touchmove', handleMessageTouchMove, { passive: true });
-            messagesContainerEl.addEventListener('touchend', cancelLongPress);
-            messagesContainerEl.addEventListener('touchcancel', cancelLongPress);
+            messagesContainerEl.addEventListener('touchend', handleMessageTouchEnd);
+            messagesContainerEl.addEventListener('touchcancel', cancelReplySwipe);
+            // The desktop counterpart of the touch swipe.
+            messagesContainerEl.addEventListener('dblclick', handleMessageDoubleClick);
+            // A quoted message is jumped back to by pressing its quotation.
+            messagesContainerEl.addEventListener('click', handleReplyQuoteClick);
         }
 
         // A menu that outlived its right-click would act on the wrong row, so any click
@@ -3293,7 +3702,7 @@
             const sender = self ? ((currentUser && currentUser.username) || 'Me') : (activeSessionUsers.get(String(senderId)) || ('User #' + senderId));
             const stamp = Number(msg.timestamp) || Date.now();
             const hint = document.getElementById('emptyConversationHint'); if (hint) hint.remove();
-            appendMessage({ text: body.text, format: body.format, sender: sender, senderId: senderId, isSelf: self, timestamp: formatClockTime(stamp), timestampMs: stamp, messageId: id, editedAt: msg.editedAt ? Number(msg.editedAt) : 0 });
+            appendMessage({ text: body.text, format: body.format, sender: sender, senderId: senderId, isSelf: self, timestamp: formatClockTime(stamp), timestampMs: stamp, messageId: id, editedAt: msg.editedAt ? Number(msg.editedAt) : 0, reply: body.reply });
             if (!self && /^User #\d+$/.test(sender)) resolveFallbackSender(senderId);
             updateActiveSessionPreview(sender, previewOfBody(body.text), stamp);
         });
@@ -3305,6 +3714,10 @@
         // are dropped before the message list is rebuilt.
         closeMessageMenu();
         if (editingRow) endMessageEdit(editingRow);
+        // A reply quotes a message of the conversation being left, so it cannot
+        // survive into the next one.
+        clearReplyTarget();
+        cancelReplySwipe();
         // Choosing a conversation is the navigation that ends a visit to the list, so
         // the mobile drawer closes behind it and reveals the transcript.
         setRailOpen(false);
@@ -3581,8 +3994,10 @@
         }
         // The raw source of a message is not recoverable from its rendered bubble (a
         // markdown body is already HTML by the time it lands), so the editor seeds its
-        // textarea from this copy instead of parsing the DOM back into text.
-        row.oxypeMessage = { text: msg.text, format: msg.format === 'markdown' ? 'markdown' : 'text' };
+        // textarea from this copy instead of parsing the DOM back into text. The
+        // quotation rides along so an edit can re-send it: replacing the pieces without
+        // it would quietly turn a reply into a message that answers nothing.
+        row.oxypeMessage = { text: msg.text, format: msg.format === 'markdown' ? 'markdown' : 'text', reply: msg.reply || null };
         // The sender id is stamped on the avatar itself so a picture arriving later can
         // find every row this account wrote, including ones drawn long before it.
         const avatarOwnerAttr = msg.senderId !== undefined && msg.senderId !== null
@@ -3592,6 +4007,7 @@
             <div class="message-avatar"${avatarOwnerAttr} data-avatar-initial="${escapeHtml(avatarChar)}" aria-hidden="true">${escapeHtml(avatarChar)}</div>
             <div class="message-bubble">
                 <div class="message-sender${continuesGroup ? ' is-hidden' : ''}">${escapeHtml(senderName)}</div>
+                ${renderReplyQuote(msg.reply)}
                 <div class="message-content${msg.format === 'markdown' ? ' message-content-markdown' : ''}">${renderMessageBody(msg.text, msg.format)}</div>
                 <div class="message-timestamp">${escapeHtml(msg.timestamp)}</div>
             </div>
@@ -3673,6 +4089,7 @@
             timestampMs,
             messageId: (msg.id !== undefined && msg.id !== null) ? msg.id : msg.seq,
             editedAt: Number(msg.editedAt) || 0,
+            reply: body.reply,
             stickToBottom: false
         };
     }
@@ -3884,6 +4301,9 @@
         if (!text.trim()) return;
 
         const format = getSelectedMessageFormat();
+        // Read before the draft is cleared, and dropped immediately: the reply belongs
+        // to this one send, and a failure below must not silently re-arm it.
+        const pendingReply = replyTarget;
 
         const stored = auth();
         const userId = currentUserId();
@@ -3891,18 +4311,26 @@
         messageInputEl.value = '';
         autoGrowComposer();
         messageInputEl.focus();
+        clearReplyTarget();
 
         const hint = document.getElementById('emptyConversationHint');
         if (hint) hint.remove();
         const sentAtMs = Date.now();
         const myName = currentUser && currentUser.username ? currentUser.username : 'Me';
         const sentRow = appendMessage({ text, format, sender: myName, senderId: userId, isSelf: true,
-            timestamp: formatClockTime(sentAtMs), timestampMs: sentAtMs });
+            timestamp: formatClockTime(sentAtMs), timestampMs: sentAtMs, reply: pendingReply });
         updateActiveSessionPreview(myName, previewOfBody(text), sentAtMs);
+
+        // The quotation goes first and the body follows it, which is the shape the
+        // server requires: it fills in the quoted sender and words from the stored
+        // message, so only the id is sent from here.
+        const content = pendingReply
+            ? [{ type: 'reply', messageId: pendingReply.messageId }, { type: format, text: text }]
+            : text;
 
         try {
             const res = await window.OxypeCore.sendMessage(
-                activeSessionId, text, userId, stored ? stored.token : null, format
+                activeSessionId, content, userId, stored ? stored.token : null, format
             );
             if (res && typeof res.seq === 'number' && res.seq > 0) {
                 currentSeq = res.seq;
@@ -3917,6 +4345,14 @@
             }
         } catch (err) {
             console.error('[Classic] Failed to send message:', err);
+            // A reply whose target was deleted while it was being written is the one
+            // failure worth naming precisely: the draft is fine, the thing it answers
+            // is not, and re-sending it as a plain message is the way out.
+            if (pendingReply && err && err.status === 404) {
+                toast(getI18nText('chat.replyMissingTarget',
+                    'The message you replied to has been deleted.'), 'error');
+                return;
+            }
             const message = err.isOffline
                 ? getI18nText('common.networkError', 'Unable to connect to server (Server offline)')
                 : (err.message || getI18nText('common.error', 'Failed to send message'));

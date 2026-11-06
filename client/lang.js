@@ -208,7 +208,18 @@
             'chat.messageDeleted': 'Message deleted.',
             'chat.messageDeleteFailed': 'Failed to delete: {reason}',
             'chat.messageEditForbidden': 'Only the author can edit this message.',
-            'chat.messageDeleteForbidden': 'Only the author or a conversation admin can delete this message.'
+            'chat.messageDeleteForbidden': 'Only the author or a conversation admin can delete this message.',
+
+            // Replying
+            'chat.replyBtn': 'Reply',
+            'chat.replyBarLabel': 'Replying to {name}',
+            'chat.replyBarCancel': 'Cancel reply',
+            'chat.replyQuoteDeleted': 'The quoted message is no longer available.',
+            'chat.replyQuoteUnknownSender': 'a message',
+            'chat.replyJumpTitle': 'Jump to the quoted message',
+            'chat.replyJumpFailed': 'That message is no longer reachable.',
+            'chat.replyFailed': 'Failed to reply: {reason}',
+            'chat.replyMissingTarget': 'The message you are replying to was deleted.'
         },
 
         'zh-CN': {
@@ -408,7 +419,18 @@
             'chat.messageDeleted': '消息已删除。',
             'chat.messageDeleteFailed': '删除失败：{reason}',
             'chat.messageEditForbidden': '只有作者可以编辑此消息。',
-            'chat.messageDeleteForbidden': '只有作者或会话管理员可以删除此消息。'
+            'chat.messageDeleteForbidden': '只有作者或会话管理员可以删除此消息。',
+
+            // Replying
+            'chat.replyBtn': '回复',
+            'chat.replyBarLabel': '正在回复 {name}',
+            'chat.replyBarCancel': '取消回复',
+            'chat.replyQuoteDeleted': '引用的消息已不存在。',
+            'chat.replyQuoteUnknownSender': '一条消息',
+            'chat.replyJumpTitle': '跳转到引用的消息',
+            'chat.replyJumpFailed': '该消息已无法定位。',
+            'chat.replyFailed': '回复失败：{reason}',
+            'chat.replyMissingTarget': '你正在回复的消息已被删除。'
         }
     };
 

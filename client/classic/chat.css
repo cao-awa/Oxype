@@ -827,6 +827,170 @@ body {
     font-style: italic;
 }
 
+/* ------------------------------------------------------------ reply quotes -----
+   The quotation above a reply's body. It is a button because its whole purpose is to
+   be pressed (it jumps back to the quoted message), but it reads as a block of quoted
+   text rather than as a control: a bar down the side, a dimmed body, and no button
+   bevel until it is hovered or focused.
+
+   It sits inside the bubble above `.message-content`, e.g.
+
+   <button class="message-reply-quote" data-reply-to="42">
+     <span class="message-reply-quote-name">Ada</span>
+     <span class="message-reply-quote-text">the words being answered</span>
+   </button>
+*/
+.message-reply-quote {
+    display: block;
+    width: 100%;
+    margin-bottom: 5px;
+    padding: 3px 6px;
+    border: none;
+    /* The accent bar is the quotation mark: it marks the block as someone else's
+       words without adding a glyph that would have to be translated. */
+    border-left: 3px solid var(--cl-caption, var(--cl-text-dim));
+    background-color: var(--cl-face);
+    color: var(--cl-text-dim);
+    font-family: var(--cl-serif);
+    font-size: 11px;
+    line-height: 1.35;
+    text-align: left;
+    cursor: pointer;
+}
+
+.message-reply-quote:hover,
+.message-reply-quote:focus-visible {
+    outline: none;
+    background-color: var(--cl-face-hover);
+    color: var(--cl-text);
+}
+
+/* The author of the quoted message, on its own line above the words */
+.message-reply-quote-name {
+    display: block;
+    margin-bottom: 1px;
+    font-weight: 700;
+    color: var(--cl-caption, var(--cl-text));
+}
+
+/* The quoted body is clamped rather than truncated in the markup, so the whole text
+   is still there for a screen reader and for find-in-page. */
+.message-reply-quote-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* A row the reader was sent back to by a quotation. The highlight is an animation so
+   it fades on its own; the class is removed when the animation ends. */
+@keyframes classic-reply-target-flash {
+    0% { background-color: var(--cl-caption, var(--cl-text-dim)); }
+    100% { background-color: transparent; }
+}
+
+.message-row.is-reply-target {
+    animation: classic-reply-target-flash 1.1s ease-out;
+}
+
+/* ------------------------------------------------------------ reply swipe -----
+   On a touch screen a row is dragged left to answer it. The row follows the finger up
+   to a limit, and the bar at its edge fills in as the gesture passes the trigger
+   distance. Both are driven from chat.js by `--reply-swipe-offset` and the
+   `is-swipe-armed` / `is-swipe-ready` classes. */
+.message-row.is-swipe-armed {
+    /* Only the horizontal component is transformable: a row that moved vertically
+       would fight the transcript's own scrolling. */
+    transform: translateX(calc(-1 * var(--reply-swipe-offset, 0px)));
+    transition: none;
+    position: relative;
+}
+
+.message-row.is-swipe-armed::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    /* Sits at the edge of the row, i.e. behind the finger that pulled it. */
+    right: -2px;
+    width: 3px;
+    height: 60%;
+    transform: translateY(-50%);
+    background-color: var(--cl-edge-dark);
+}
+
+.message-row.is-swipe-armed.is-swipe-ready::after {
+    background-color: var(--cl-caption, var(--cl-text));
+}
+
+/* ------------------------------------------------------------- reply bar -----
+   The strip above the composer announcing what the next send will answer. Built by
+   ensureReplyBar() and hidden until a message is being replied to, so a page that
+   never replies is laid out exactly as before. */
+.reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 12px 4px;
+    padding: 4px 6px;
+    border-left: 3px solid var(--cl-caption, var(--cl-edge-dark));
+    background-color: var(--cl-face);
+}
+
+.reply-bar-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    text-align: left;
+}
+
+.reply-bar-label {
+    font-family: var(--cl-serif);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--cl-caption, var(--cl-text));
+}
+
+/* One line only: the bar must not grow with the length of what it quotes, or the
+   composer would be pushed off screen. */
+.reply-bar-preview {
+    overflow: hidden;
+    font-family: var(--cl-serif);
+    font-size: 11px;
+    color: var(--cl-text-dim);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.reply-bar-cancel {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid transparent;
+    background: none;
+    color: var(--cl-text-dim);
+    font-family: var(--cl-serif);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.reply-bar-cancel:hover,
+.reply-bar-cancel:focus-visible {
+    outline: none;
+    background-color: var(--cl-face-hover);
+    border-top-color: var(--cl-edge-light);
+    border-left-color: var(--cl-edge-light);
+    border-right-color: var(--cl-edge-dark);
+    border-bottom-color: var(--cl-edge-dark);
+    color: var(--cl-text);
+}
+
 /* Right-click message menu. Fixed positioning places it at the pointer, since the
    message list scrolls and an absolutely positioned menu would drift with it. The
    z-index sits above the message list but below both the dialogs and the toast layer

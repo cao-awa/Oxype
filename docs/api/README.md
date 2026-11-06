@@ -832,8 +832,19 @@ Request body:
 3. ``pieces``:array<object> (the message content pieces)
 
 Each element of ``pieces``:
-1. ``type``:string (``text`` or ``markdown``)
-2. ``text``:string (the piece body)
+1. ``type``:string (``text``, ``markdown`` or ``reply``)
+2. ``text``:string (the piece body; for ``reply`` this is filled in by the server and is ignored on input)
+3. ``messageId``:long (``reply`` only: the sequence number of the message being quoted)
+
+A ``reply`` piece makes the message a reply. It must be the **first** element of
+``pieces``; a ``reply`` piece anywhere else is rejected with ``400``. The quoted
+message must exist in the same session, otherwise the request fails with ``404``.
+
+Only ``messageId`` is supplied by the caller. The server copies the quoted message's
+sender, sender name and text into the piece it stores, so a quotation keeps its
+wording even if the original is later edited or deleted; the stored ``messageId``
+is what a client follows to jump back. A quotation is therefore a snapshot, not a
+live reference.
 
 Request body example:
 ```json
@@ -849,6 +860,24 @@ Request body example:
 }
 ```
 
+Request body example (reply):
+```json
+{
+  "userid": 1,
+  "token": "ABC",
+  "pieces": [
+    {
+      "type": "reply",
+      "messageId": 7
+    },
+    {
+      "type": "markdown",
+      "text": "Good point, **agreed**."
+    }
+  ]
+}
+```
+
 Response:
 1. ``seq``:long (the message sequence number; ``-1`` means the caller is not a member of this session and nothing was sent)
 
@@ -856,6 +885,14 @@ Response example:
 ```json
 {
   "seq": 12
+}
+```
+
+A rejected ``reply`` piece answers ``400`` when it is not the first piece, and ``404``
+when the message it quotes does not exist in this session:
+```json
+{
+  "error": "Message 7 to reply to was not found"
 }
 ```
 
@@ -872,8 +909,14 @@ Request body:
 4. ``pieces``:array<object> (the new message content pieces)
 
 Each element of ``pieces``:
-1. ``type``:string (``text`` or ``markdown``)
-2. ``text``:string (the piece body)
+1. ``type``:string (``text``, ``markdown`` or ``reply``)
+2. ``text``:string (the piece body; for ``reply`` this is filled in by the server and is ignored on input)
+3. ``messageId``:long (``reply`` only: the sequence number of the message being quoted)
+
+The ``pieces`` array replaces the stored one outright, so an edit to a reply must
+send its ``reply`` piece again or the quotation is lost. The rules are the same as
+for [sendMessage](#sendmessage): ``reply`` first, and the quoted message must exist
+in this session.
 
 Request body example:
 ```json
@@ -885,6 +928,25 @@ Request body example:
     {
       "type": "markdown",
       "text": "**Hello**"
+    }
+  ]
+}
+```
+
+Request body example (editing a reply, keeping its quotation):
+```json
+{
+  "userid": 1,
+  "token": "ABC",
+  "messageId": 12,
+  "pieces": [
+    {
+      "type": "reply",
+      "messageId": 7
+    },
+    {
+      "type": "text",
+      "text": "Hello again"
     }
   ]
 }

@@ -832,8 +832,17 @@
 3. ``pieces``:array<object>（消息内容片段）
 
 ``pieces`` 的每个元素:
-1. ``type``:string（``text`` 或 ``markdown``）
-2. ``text``:string（片段正文）
+1. ``type``:string（``text``、``markdown`` 或 ``reply``）
+2. ``text``:string（片段正文；``reply`` 片段由服务端填充，请求中会被忽略）
+3. ``messageId``:long（仅 ``reply``：被引用消息的序号）
+
+``reply`` 片段使这条消息成为一条回复。它必须是 ``pieces`` 的**第一个**元素；出现在
+其他位置的 ``reply`` 片段会被拒绝并返回 ``400``。被引用的消息必须存在于同一会话中，
+否则请求返回 ``404``。
+
+调用方只需提供 ``messageId``。被引用消息的发送者、发送者名字与正文由服务端复制进
+存储的片段中，因此即使原消息之后被编辑或删除，引用仍然保留它当时的措辞；存储的
+``messageId`` 供客户端跳回原处。也就是说，引用是一份快照，而不是实时引用。
 
 请求体示例:
 ```json
@@ -849,6 +858,24 @@
 }
 ```
 
+请求体示例（回复）:
+```json
+{
+  "userid": 1,
+  "token": "ABC",
+  "pieces": [
+    {
+      "type": "reply",
+      "messageId": 7
+    },
+    {
+      "type": "markdown",
+      "text": "有道理，**同意**。"
+    }
+  ]
+}
+```
+
 返回值:
 1. ``seq``:long（消息序号，``-1`` 表示调用者不是该会话成员、未发送）
 
@@ -856,6 +883,13 @@
 ```json
 {
   "seq": 12
+}
+```
+
+``reply`` 片段不在首位时返回 ``400``，被引用的消息在本会话中不存在时返回 ``404``:
+```json
+{
+  "error": "Message 7 to reply to was not found"
 }
 ```
 
@@ -872,8 +906,13 @@
 4. ``pieces``:array<object>（新的消息内容片段）
 
 ``pieces`` 的每个元素:
-1. ``type``:string（``text`` 或 ``markdown``）
-2. ``text``:string（片段正文）
+1. ``type``:string（``text``、``markdown`` 或 ``reply``）
+2. ``text``:string（片段正文；``reply`` 片段由服务端填充，请求中会被忽略）
+3. ``messageId``:long（仅 ``reply``：被引用消息的序号）
+
+``pieces`` 会整体替换已存储的片段，因此编辑一条回复时必须重新发送它的 ``reply``
+片段，否则引用会被丢弃。规则与 [sendMessage](#sendmessage) 相同：``reply`` 必须在
+首位，且被引用的消息必须存在于本会话。
 
 请求体示例:
 ```json
@@ -885,6 +924,25 @@
     {
       "type": "markdown",
       "text": "**Hello**"
+    }
+  ]
+}
+```
+
+请求体示例（编辑一条回复，保留其引用）:
+```json
+{
+  "userid": 1,
+  "token": "ABC",
+  "messageId": 12,
+  "pieces": [
+    {
+      "type": "reply",
+      "messageId": 7
+    },
+    {
+      "type": "text",
+      "text": "Hello again"
     }
   ]
 }
