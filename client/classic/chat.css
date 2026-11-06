@@ -846,6 +846,11 @@ body {
     margin-bottom: 5px;
     padding: 3px 6px;
     border: none;
+    /* This block is a <button>, and the base stylesheet rounds every button with the
+       *default* skin's `--radius-md`. Left alone the quotation would be the one
+       rounded thing in a square skin, so the radius is pinned to this skin's own
+       token: 0 here, and still correct if the skin ever softens its corners. */
+    border-radius: var(--cl-radius);
     /* The accent bar is the quotation mark: it marks the block as someone else's
        words without adding a glyph that would have to be translated. */
     border-left: 3px solid var(--cl-caption, var(--cl-text-dim));
@@ -972,6 +977,9 @@ body {
     height: 20px;
     padding: 0;
     border: 1px solid transparent;
+    /* Same reason as the quotation: the base stylesheet's button radius would
+       otherwise survive into this square skin. */
+    border-radius: var(--cl-radius);
     background: none;
     color: var(--cl-text-dim);
     font-family: var(--cl-serif);
@@ -1014,6 +1022,9 @@ body {
     width: 100%;
     padding: 5px 10px;
     border: 1px solid transparent;
+    /* The Reply/Edit/Delete entries are buttons too, so the base stylesheet's
+       radius has to be cancelled here as well. */
+    border-radius: var(--cl-radius);
     background: none;
     color: var(--cl-text);
     font-family: inherit;
