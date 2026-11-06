@@ -5,12 +5,134 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="chat.title">Oxype</title>
     <!--
-        This page intentionally declares no stylesheet or script directly.
-        Every asset, including the overridable chat.css / chat.js / chat.html, is
-        loaded by bootstrap.js so a user-configured source can be substituted and
-        rolled back to the bundled files if it fails.
+        This page intentionally declares no stylesheet or script of its own that could
+        be replaced: every asset, including the overridable chat.css / chat.js /
+        chat.html, is loaded by bootstrap.js so a user-configured source can be
+        substituted and rolled back to the bundled files if it fails.
+
+        The inline guard below is the one exception, and it has to be inline. It hides
+        the page until those assets are applied, and it cannot live in bootstrap.js
+        because bootstrap.js is itself a request that can fail or stall -- a guard that
+        never runs leaves the parser to paint this markup with no styles at all, which
+        is exactly what a stalled load used to look like.
     -->
+    <style>
+        html.oxype-boot-loading { background-color: #f5f6f8; }
+        /* visibility rather than display, so the body keeps its normal box while it is
+           hidden: chat.js measures the transcript before this class comes off, and a
+           display:none body measures zero. */
+        html.oxype-boot-loading body { visibility: hidden !important; }
+        /* visibility is inherited but overridable, and this app sets visibility:visible
+           on opened drawers and sidebars; without this every one of them would punch a
+           hole through the hidden page. */
+        html.oxype-boot-loading body * { visibility: hidden !important; }
+        /* On the root rather than the body: the body is hidden, so a spinner inside it
+           would be hidden too. */
+        html.oxype-boot-loading::before {
+            content: '';
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 34px;
+            height: 34px;
+            margin: -17px 0 0 -17px;
+            box-sizing: border-box;
+            border: 3px solid rgba(127, 127, 127, 0.25);
+            border-top-color: #4a6cf7;
+            border-radius: 50%;
+            animation: oxype-boot-spin 0.8s linear infinite;
+        }
+        @media (prefers-color-scheme: dark) {
+            html.oxype-boot-loading { background-color: #15171c; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            html.oxype-boot-loading::before { animation-duration: 2.4s; }
+        }
+        @keyframes oxype-boot-spin { to { transform: rotate(360deg); } }
+        /* The prompt shown when bootstrap.js never ran, so everything it needs has to
+           be in this block. */
+        html.oxype-boot-failed::before { display: none; }
+        .oxype-boot-failure {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            box-sizing: border-box;
+            width: calc(100% - 48px);
+            max-width: 340px;
+            padding: 20px 24px;
+            font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+            color: #2c2f36;
+            text-align: center;
+            background-color: #ffffff;
+            border: 1px solid rgba(127, 127, 127, 0.25);
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+        }
+        @media (prefers-color-scheme: dark) {
+            .oxype-boot-failure {
+                color: #e6e8ef;
+                background-color: #22252c;
+                border-color: rgba(255, 255, 255, 0.14);
+            }
+        }
+        .oxype-boot-failure button {
+            margin-top: 14px;
+            padding: 8px 18px;
+            font: inherit;
+            color: #ffffff;
+            background-color: #4a6cf7;
+            border: 0;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+    </style>
+    <noscript>
+        <!-- Without scripting nothing can lift the guard, so it would be a spinner
+             forever; the bare markup is at least usable. -->
+        <style>
+            html.oxype-boot-loading body,
+            html.oxype-boot-loading body * { visibility: visible !important; }
+            html.oxype-boot-loading::before { display: none; }
+        </style>
+    </noscript>
+    <script>
+        // Runs while <head> is still being parsed, so the class is on the root before
+        // any of the body exists. Nothing here waits on the network.
+        document.documentElement.classList.add('oxype-boot-loading');
+    </script>
     <script src="bootstrap.js"></script>
+    <script>
+        // bootstrap.js lifts the guard above. Two ways it cannot: its request failed,
+        // or it threw before it put its own gate up. Either leaves nothing to load the
+        // stylesheets, so offer the reload prompt it would have shown instead. Both are
+        // measurable right here -- it marks itself first thing and installs its gate
+        // immediately after.
+        (function () {
+            var booted = !!window.oxypeBootstrapBooted;
+            var gated = document.documentElement.classList.contains('oxype-bootstrap-loading');
+            if (booted && gated) return;
+            document.documentElement.classList.add('oxype-boot-failed');
+            var lang = null;
+            try { lang = localStorage.getItem('oxype_lang'); } catch (e) { }
+            var zh = lang === 'zh-CN';
+            var box = document.createElement('div');
+            box.className = 'oxype-boot-failure';
+            box.setAttribute('role', 'alert');
+            var message = document.createElement('div');
+            message.textContent = zh
+                ? '页面样式未能加载，无法正常显示。请检查网络连接后重试。'
+                : 'This page could not be loaded because its styles did not arrive.'
+                    + ' Check your connection and try again.';
+            box.appendChild(message);
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = zh ? '重新加载' : 'Reload';
+            button.addEventListener('click', function () { location.reload(); });
+            box.appendChild(button);
+            document.documentElement.appendChild(box);
+        })();
+    </script>
 </head>
 <body>
     <div class="chat-app-layout">

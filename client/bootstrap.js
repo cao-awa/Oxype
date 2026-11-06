@@ -14,26 +14,55 @@
  * path on this same origin. If ANY of those fails to load, every source falls back to
  * the bundled default and a toast reports the URL that failed.
  *
+ * The page is only shown once style.css and chat.css have actually been applied, so a
+ * slow or failed stylesheet shows the loading spinner (or, once loading cannot succeed,
+ * a reload prompt) rather than this page's own unstyled markup. The pages hide
+ * themselves with an inline guard before this file is even requested, because this
+ * request can fail too: see STATIC_GUARD_CLASS below.
+ *
  * This script must stay dependency-free: it is what loads lang.js and style.js, so
  * it cannot assume OxypeI18n, OxypeStyle or OxypeCore exist yet.
  */
 (function (global) {
     'use strict';
 
+    // Read by the page's own inline fallback, which sits right after this script in
+    // <head> and is reached immediately after this line when the request succeeded.
+    // Its absence therefore means this file never ran: the browser refused to execute
+    // it, or the request failed outright.
+    global.oxypeBootstrapBooted = true;
+
     // Keep the document blank until the bundled/custom assets have finished loading.
-    // The page is revealed by removing this class in finishLoading().
+    // The class comes off in exactly one place, reveal(), and reveal() is only reached
+    // once the stylesheets the page is laid out by are in fact applied. A document
+    // whose styles did not arrive therefore shows a prompt to reload instead of its
+    // own unstyled markup, which is what a slow or failed load used to look like.
     //
-    // The spinner is written here rather than in the page markup for the same reason
-    // the rest of this file exists: chat.html may be replaced by a user's own copy at
-    // any moment, so a progress indicator that lived in the markup would vanish on
-    // exactly the loads that take longest.
+    // The spinner below is only for pages that include this file without the inline
+    // guard; the bundled pages draw their own from static styles, and adding a second
+    // one here would stack two spinners on the same spot.
     var LOADING_CLASS = 'oxype-bootstrap-loading';
+
+    /**
+     * The guard the page itself installed before requesting this file.
+     *
+     * This is the layer that covers this file's own request failing, which nothing
+     * inside this file can cover. When it is present the page also draws the spinner
+     * from its own inline styles, so no second one is added here; the two layers only
+     * have to agree on when the document may be shown.
+     */
+    var STATIC_GUARD_CLASS = 'oxype-boot-loading';
+    var STATIC_FAILED_CLASS = 'oxype-boot-failed';
+    var hasStaticGuard = document.documentElement.classList.contains(STATIC_GUARD_CLASS);
 
     var loadingStyle = document.createElement('style');
     loadingStyle.textContent = [
-        'html.' + LOADING_CLASS + ' body { display: none !important; }',
-        // The body stays hidden, so the surface behind the spinner is painted on the
-        // root element instead; it disappears with the class.
+        'html.' + LOADING_CLASS + ' body { visibility: hidden !important; }',
+        // visibility is inherited but overridable, and the app sets visibility:visible
+        // on opened drawers, so every descendant is pinned too.
+        'html.' + LOADING_CLASS + ' body * { visibility: hidden !important; }',
+        // The body keeps its box but is invisible, so the surface behind the spinner is
+        // painted on the root element instead; it disappears with the class.
         'html.' + LOADING_CLASS + ' { background-color: #f5f6f8; }',
         '@media (prefers-color-scheme: dark) {',
         '  html.' + LOADING_CLASS + ' { background-color: #15171c; }',
@@ -60,30 +89,191 @@
         '@media (prefers-reduced-motion: reduce) {',
         '  .oxype-bootstrap-spinner { animation-duration: 2.4s; }',
         '}',
-        '@keyframes oxype-bootstrap-spin { to { transform: rotate(360deg); } }'
+        '@keyframes oxype-bootstrap-spin { to { transform: rotate(360deg); } }',
+        // Shown only when the stylesheets cannot be loaded at all. It is styled from
+        // this inline block for the same reason it exists: the page has no styles.
+        '.oxype-bootstrap-failure {',
+        '  position: fixed;',
+        '  top: 50%;',
+        '  left: 50%;',
+        '  transform: translate(-50%, -50%);',
+        '  box-sizing: border-box;',
+        '  width: calc(100% - 48px);',
+        '  max-width: 340px;',
+        '  padding: 20px 24px;',
+        '  font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;',
+        '  color: #2c2f36;',
+        '  text-align: center;',
+        '  background-color: #ffffff;',
+        '  border: 1px solid rgba(127, 127, 127, 0.25);',
+        '  border-radius: 8px;',
+        '  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);',
+        '}',
+        '@media (prefers-color-scheme: dark) {',
+        '  .oxype-bootstrap-failure {',
+        '    color: #e6e8ef;',
+        '    background-color: #22252c;',
+        '    border-color: rgba(255, 255, 255, 0.14);',
+        '  }',
+        '}',
+        '.oxype-bootstrap-failure button {',
+        '  margin-top: 14px;',
+        '  padding: 8px 18px;',
+        '  font: inherit;',
+        '  color: #ffffff;',
+        '  background-color: #4a6cf7;',
+        '  border: 0;',
+        '  border-radius: 6px;',
+        '  cursor: pointer;',
+        '}'
     ].join('\n');
 
     document.documentElement.classList.add(LOADING_CLASS);
     document.head.appendChild(loadingStyle);
 
-    // Appended to the root element, not the body: the body is display:none while this
-    // is on screen. A node added to <html> by script is not re-parented by the parser,
-    // so it survives the rest of the page being parsed.
-    var loadingSpinner = document.createElement('div');
-    loadingSpinner.className = 'oxype-bootstrap-spinner';
-    loadingSpinner.setAttribute('aria-hidden', 'true');
-    document.documentElement.appendChild(loadingSpinner);
-
-    function finishLoading() {
-        document.documentElement.classList.remove(LOADING_CLASS);
-        if (loadingStyle.parentNode) loadingStyle.parentNode.removeChild(loadingStyle);
-        if (loadingSpinner.parentNode) loadingSpinner.parentNode.removeChild(loadingSpinner);
+    // Appended to the root element, not the body: the body is invisible while this is
+    // on screen (and its descendants are pinned invisible too). A node added to <html>
+    // by script is not re-parented by the parser, so it survives the rest of the page
+    // being parsed.
+    var loadingSpinner = null;
+    if (!hasStaticGuard) {
+        loadingSpinner = document.createElement('div');
+        loadingSpinner.className = 'oxype-bootstrap-spinner';
+        loadingSpinner.setAttribute('aria-hidden', 'true');
+        document.documentElement.appendChild(loadingSpinner);
     }
 
+    /** The prompt shown instead of the page when the styles never arrived. */
+    var failureBox = null;
+
+    /** Takes the loading layer down. Only reveal() may call this. */
+    function finishLoading() {
+        document.documentElement.classList.remove(LOADING_CLASS);
+        // The page's own guard comes off here too: this file owns the moment the
+        // document may be shown, whichever of the two layers put the spinner up.
+        document.documentElement.classList.remove(STATIC_GUARD_CLASS);
+        document.documentElement.classList.remove(STATIC_FAILED_CLASS);
+        if (loadingStyle.parentNode) loadingStyle.parentNode.removeChild(loadingStyle);
+        if (loadingSpinner && loadingSpinner.parentNode) loadingSpinner.parentNode.removeChild(loadingSpinner);
+        if (failureBox && failureBox.parentNode) failureBox.parentNode.removeChild(failureBox);
+    }
+
+    /**
+     * Shows the page, but only once what it is laid out by has actually arrived.
+     *
+     * Every path out of the loader ends here rather than at finishLoading(), which is
+     * the point: a stylesheet that failed, timed out, or was removed before the parser
+     * applied it leaves the document hidden and offers a reload instead. Without this
+     * the markup was shown bare -- full-width block elements in the system font -- for
+     * as long as the missing stylesheet took, which on a slow link is the whole load.
+     */
+    function reveal() {
+        if (!assetsReady()) {
+            showFailure();
+            return;
+        }
+        finishLoading();
+    }
+
+    /**
+     * Keeps the document hidden and swaps the spinner for a reload prompt.
+     *
+     * Stays inside the loading layer for the same reason the spinner does: the page
+     * markup must not be painted without its styles, so the only thing on screen is
+     * something this file styled itself.
+     */
+    function showFailure() {
+        if (failureBox) {
+            return;
+        }
+        if (loadingSpinner && loadingSpinner.parentNode) {
+            loadingSpinner.parentNode.removeChild(loadingSpinner);
+        }
+        // Stops the page's own static spinner, which is a pseudo-element and so cannot
+        // be removed with it. The class is harmless without the guard in the page.
+        document.documentElement.classList.add(STATIC_FAILED_CLASS);
+
+        var box = document.createElement('div');
+        box.className = 'oxype-bootstrap-failure';
+        box.setAttribute('role', 'alert');
+
+        var message = document.createElement('div');
+        message.textContent = translate('chat.styleLoadFailed', failureText('message'));
+        box.appendChild(message);
+
+        var reload = document.createElement('button');
+        reload.type = 'button';
+        reload.textContent = translate('chat.styleLoadReload', failureText('reload'));
+        reload.addEventListener('click', function () {
+            global.location.reload();
+        });
+        box.appendChild(reload);
+
+        document.documentElement.appendChild(box);
+        failureBox = box;
+
+        if (failedAssets.length) {
+            console.error('[Bootstrap] These assets did not load: ' + failedAssets.join(', '));
+        }
+    }
+
+    /** Looks a message up in the shared table, which may not have loaded yet. */
+    function translate(key, fallback) {
+        if (global.OxypeI18n && typeof global.OxypeI18n.t === 'function') {
+            var localized = global.OxypeI18n.t(key);
+            if (localized && localized !== key) {
+                return localized;
+            }
+        }
+        return fallback;
+    }
+
+    /**
+     * The failure prompt's own text, in the user's language.
+     *
+     * This cannot come from lang.js alone: the prompt exists for the case where the boot
+     * never got as far as the bundled scripts, and then OxypeI18n is not there to be
+     * asked. The language is therefore read the same way lang.js reads it -- from the
+     * value already in local storage, which settings.js puts there before anything else
+     * runs -- and the two strings are duplicated here on purpose.
+     */
+    function failureText(which) {
+        var lang = null;
+        try {
+            lang = global.localStorage.getItem(STORAGE_KEY_LANG);
+        } catch (e) {
+            // Private mode with storage disabled: fall through to the default below.
+        }
+        // An unknown or absent value means English, which is what lang.js does too.
+        var zh = lang === 'zh-CN';
+        if (which === 'reload') {
+            return zh ? '重新加载' : 'Reload';
+        }
+        return zh
+            ? '页面样式未能加载，无法正常显示。请检查网络连接后重试。'
+            : 'This page could not be loaded because its styles did not arrive.'
+                + ' Check your connection and try again.';
+    }
+
+    /**
+     * Directory of the page being loaded, with a trailing slash.
+     *
+     * The bundled default for an override is the asset sitting next to the document,
+     * not a fixed path: `/classic/chat.html` is served with classic markup, so rolling
+     * it back to `/chat.css` would lay that markup out with the default skin's rules
+     * and leave the page visibly broken. On `/chat.html` this is `/`, which is exactly
+     * the fixed defaults this used to hard-code.
+     */
+    var PAGE_DIR = (function () {
+        var path = (global.location && global.location.pathname) || '/';
+        var slash = path.lastIndexOf('/');
+        return slash === -1 ? '/' : path.slice(0, slash + 1);
+    })();
+
     /** Bundled defaults, used when the matching override is empty. */
-    var DEFAULT_HTML = '/chat.html';
-    var DEFAULT_CSS = '/chat.css';
-    var DEFAULT_JS = '/chat.js';
+    var DEFAULT_HTML = PAGE_DIR + 'chat.html';
+    var DEFAULT_CSS = PAGE_DIR + 'chat.css';
+    var DEFAULT_JS = PAGE_DIR + 'chat.js';
 
     /** Assets that are part of the application itself and cannot be overridden. */
     var BASE_STYLESHEET = '/style.css';
@@ -109,6 +299,98 @@
 
     var loadedStyleSheets = {};
     var loadedScripts = {};
+
+    /**
+     * Stylesheets the page cannot be shown without, in load order.
+     *
+     * A stylesheet that is merely requested is not enough: the markup only looks like
+     * itself once the rules are applied, so these are what reveal() waits for.
+     */
+    var requiredStyleSheets = [];
+
+    /** Assets that failed to load, reported to the console with the failure prompt. */
+    var failedAssets = [];
+
+    /** How many times a missing stylesheet is fetched again before giving up. */
+    var MAX_ASSET_RETRIES = 1;
+    var RETRY_DELAY_MS = 2500;
+
+    /** Attempts already made per stylesheet, so each one gets its own budget. */
+    var assetAttempts = {};
+
+    /** Records that [url] has to be applied before this document may be shown. */
+    function requireStyleSheet(url) {
+        if (requiredStyleSheets.indexOf(url) === -1) {
+            requiredStyleSheets.push(url);
+        }
+    }
+
+    function recordFailure(url) {
+        if (failedAssets.indexOf(url) === -1) {
+            failedAssets.push(url);
+        }
+    }
+
+    /**
+     * Reports whether every required stylesheet is applied to this document.
+     *
+     * The signal is the link's own load event, held in loadedStyleSheets, plus the
+     * element still being in the document. A stylesheet that has been requested but
+     * not yet arrived is already in document.styleSheets with no rules, so the presence
+     * of the entry says nothing; only the load event does. The element check catches a
+     * link removed after it resolved, which is how a timeout used to make the page
+     * reveal itself with nothing applied.
+     */
+    function assetsReady() {
+        for (var i = 0; i < requiredStyleSheets.length; i++) {
+            var link = loadedStyleSheets[requiredStyleSheets[i]];
+            if (!link || !link.parentNode) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Loads a stylesheet the page is laid out by, trying again after a failure.
+     *
+     * A dropped request on a slow link is not the same as a stylesheet that is gone,
+     * and the two are indistinguishable from here. Retrying costs a few seconds in the
+     * second case -- the spinner stays up throughout, and nothing unstyled is ever
+     * painted in the meantime -- so the page recovers from the first case instead of
+     * giving up on it.
+     */
+    function loadRequiredStyleSheet(url) {
+        requireStyleSheet(url);
+        return new Promise(function (resolve, reject) {
+            function attempt() {
+                loadStyleSheet(url).then(resolve, function (error) {
+                    var used = assetAttempts[url] || 0;
+                    if (used < MAX_ASSET_RETRIES) {
+                        assetAttempts[url] = used + 1;
+                        setTimeout(attempt, RETRY_DELAY_MS);
+                        return;
+                    }
+                    recordFailure(url);
+                    reject(error);
+                });
+            }
+            attempt();
+        });
+    }
+
+    /**
+     * Drops the overrides from the required list after a rollback.
+     *
+     * Once a custom stylesheet has failed the page is laid out by the bundled sheets
+     * alone, so keeping the failed one required would make assetsReady() fail forever
+     * and leave the reload prompt up over a page that is in fact correctly styled.
+     */
+    function keepOnlyBundledStyleSheets() {
+        requiredStyleSheets = requiredStyleSheets.filter(function (url) {
+            return url === BASE_STYLESHEET || url === DEFAULT_CSS;
+        });
+    }
 
     /** Markup of the bundled page, captured before any custom HTML replaces it. */
     var bundledBodyHtml = null;
@@ -196,13 +478,6 @@
             };
 
             document.head.appendChild(script);
-        });
-    }
-
-    function loadStyleSheetIgnoringFailure(url) {
-        return loadStyleSheet(url).catch(function () {
-            // Bundled assets carry no user configuration, so a failure here is not a
-            // source fallback and must not be reported as one.
         });
     }
 
@@ -477,8 +752,13 @@
             htmlApplied = false;
         }
 
-        return loadStyleSheetIgnoringFailure(BASE_STYLESHEET)
-            .then(function () { return loadStyleSheetIgnoringFailure(DEFAULT_CSS); })
+        return loadRequiredStyleSheet(BASE_STYLESHEET)
+            .then(function () { return loadRequiredStyleSheet(DEFAULT_CSS); })
+            .then(function () {
+                // The page is laid out by the bundled sheets again, so a custom sheet
+                // that failed must stop being a precondition for showing it.
+                keepOnlyBundledStyleSheets();
+            })
             .then(loadBaseScripts)
             .then(function () {
                 // The markup was replaced after lang.js first ran, so re-apply the
@@ -515,15 +795,24 @@
         }
 
         chain = chain
-            .then(function () { return loadStyleSheetIgnoringFailure(BASE_STYLESHEET); })
+            // A page cannot be shown without its styles, so a sheet that fails here is
+            // recorded and the chain continues only so the rest of the boot can finish
+            // -- reveal() then keeps the document hidden instead of painting bare markup.
+            .then(function () {
+                return loadRequiredStyleSheet(BASE_STYLESHEET).catch(function (error) {
+                    console.error('[Bootstrap] Base stylesheet unavailable:', error);
+                });
+            })
             .then(function () {
                 var cssUrl = sources.css || DEFAULT_CSS;
-                return loadStyleSheet(cssUrl).catch(function () {
-                    if (sources.css) {
-                        return fallbackToDefaults(sources.css).then(function () {
-                            throw { handled: true };
-                        });
+                return loadRequiredStyleSheet(cssUrl).catch(function (error) {
+                    if (!sources.css) {
+                        console.error('[Bootstrap] Bundled stylesheet unavailable:', error);
+                        return;
                     }
+                    return fallbackToDefaults(sources.css).then(function () {
+                        throw { handled: true };
+                    });
                 });
             })
             .then(loadBaseScripts)
@@ -539,15 +828,15 @@
             });
 
         chain
-            .then(finishLoading)
+            .then(reveal)
             .catch(function (error) {
                 // A handled fallback already reported itself; anything else is a bundled
-                // asset problem and is left to the console. Reveal the page regardless,
-                // so a broken optional asset cannot leave an invisible document forever.
+                // asset problem and is left to the console. reveal() is still the way out:
+                // it shows the page when the styles arrived and a prompt when they did not.
                 if (!error || !error.handled) {
                     console.error('[Bootstrap] Failed to load client assets:', error);
                 }
-                finishLoading();
+                reveal();
             });
     }
 
