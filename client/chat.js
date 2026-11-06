@@ -4535,6 +4535,11 @@
      * The desktop counterpart of the touch swipe. It is gated on the row being one
      * that can be replied to, and it stands down while a row is being edited, where a
      * double click is a word selection.
+     *
+     * Note what it does *not* test: whether text is selected. By the time this event
+     * arrives the browser has already selected the word under the pointer, so such a
+     * test can never pass. Text is selected by dragging, and a drag fires no double
+     * click at all, so the two gestures cannot be confused.
      * @param {MouseEvent} e
      */
     function handleMessageDoubleClick(e) {
@@ -4546,12 +4551,19 @@
         // click handler has already claimed it.
         if (e.target && e.target.closest && e.target.closest('.message-reply-quote')) return;
         if (!canReplyToMessage(row)) return;
-        // Selecting text inside a message is a common way to read or copy it, and a
-        // double click is how a word gets selected. Only an unselected double click
-        // is taken as "reply to this".
-        const selection = window.getSelection ? window.getSelection() : null;
-        if (selection && !selection.isCollapsed) return;
+        // A double click always ends with the word under the pointer selected, and
+        // that selection is committed during the second press -- before this event
+        // fires. Testing the selection here would therefore always see text and
+        // always stand down, which is what kept the gesture from ever working.
+        // Dragging is the deliberate way to select text, and a drag never produces a
+        // double click, so nothing is lost by taking the event at face value.
         e.preventDefault();
+        // The reply bar is what the gesture is meant to show, so the word the browser
+        // just picked out is cleared rather than left highlighted behind it.
+        const selection = window.getSelection ? window.getSelection() : null;
+        if (selection && !selection.isCollapsed && typeof selection.removeAllRanges === 'function') {
+            selection.removeAllRanges();
+        }
         startReplyToMessage(row);
     }
 
