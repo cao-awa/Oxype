@@ -1013,6 +1013,118 @@
     flex-shrink: 0;
 }
 
+/* ---------------------------------------------------------------------------
+   Uploaded avatars
+
+   An avatar that has a picture keeps the exact frame its initial had -- same
+   box, same radius -- and only swaps its contents, so a conversation with a
+   picture and one without still line up in the list. The <img> fills the box
+   and inherits the radius through `border-radius: inherit`, which is why the
+   rules below never restate a size.
+   --------------------------------------------------------------------------- */
+.session-avatar.has-image,
+.message-avatar.has-image,
+.user-avatar-sm.has-image,
+.session-settings-avatar.has-image {
+    background-color: transparent;
+    overflow: hidden;
+    padding: 0;
+}
+
+.session-avatar.has-image img,
+.message-avatar.has-image img,
+.user-avatar-sm.has-image img,
+.session-settings-avatar.has-image img {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    object-fit: cover;
+    display: block;
+}
+
+/* The big preview inside the avatar toast. Square, like every other avatar. */
+.avatar-preview {
+    width: 96px;
+    height: 96px;
+    margin: 0 auto 14px;
+    border-radius: var(--radius-md);
+    background-color: var(--primary-light);
+    color: var(--primary-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+    font-weight: 600;
+    overflow: hidden;
+    user-select: none;
+}
+
+.avatar-preview img {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    object-fit: cover;
+    display: block;
+}
+
+/* The live conversation avatar in the conversation settings toast. */
+.session-settings-avatar {
+    width: 64px;
+    height: 64px;
+    border-radius: var(--radius-md);
+    background-color: var(--primary-light);
+    color: var(--primary-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    font-weight: 600;
+    flex-shrink: 0;
+    overflow: hidden;
+    user-select: none;
+}
+
+.avatar-hint {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0 0 12px;
+}
+
+.avatar-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-top: 14px;
+}
+
+/* The conversation-settings variant: avatar on the left, its hint filling the rest. */
+.avatar-ss-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+}
+
+.avatar-ss-actions {
+    flex: 1;
+    min-width: 0;
+}
+
+.avatar-ss-row .avatar-hint {
+    margin: 0;
+}
+
+/* Hidden file input: the visible control is a styled button. */
+.avatar-file-input {
+    display: none;
+}
+
+/* Marks the picker while an upload is in flight. */
+.avatar-preview.is-uploading {
+    opacity: 0.55;
+}
+
 .settings-row {
     display: flex;
     align-items: center;

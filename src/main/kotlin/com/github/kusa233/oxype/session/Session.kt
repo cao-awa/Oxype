@@ -6,7 +6,17 @@ data class Session(
     var owner: Long = 0L,
     val admins: MutableList<Long> = mutableListOf(),
     val members: MutableList<Long> = mutableListOf(),
-    var description: String = ""
+    var description: String = "",
+    /**
+     * Name of this session's avatar file under `client/avatar`, or null/empty when the
+     * session has none and is drawn with its initial.
+     *
+     * Nullable rather than merely defaulted because sessions are persisted through
+     * Cason's reflective decoder, which passes `null` for every key missing from the
+     * stored record instead of honouring a Kotlin default; a non-null field would make
+     * every session created before this field existed fail to load.
+     */
+    var avatarFile: String? = null
 ) {
     companion object {
         /** Normalises decoded numbers: JSON round-trips restore small values as Integer. */

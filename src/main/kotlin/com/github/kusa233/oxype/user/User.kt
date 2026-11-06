@@ -37,7 +37,12 @@ data class User(
     /** Colour tone id, or empty for the default tone. */
     val prefAccent: String? = null,
     /** Composer body format: `text` or `markdown`. */
-    val prefInputFormat: String? = null
+    val prefInputFormat: String? = null,
+    /**
+     * Name of this account's avatar file under `client/avatar`, or null/empty when the
+     * account has none and is drawn with its initial.
+     */
+    val avatarFile: String? = null
 )
 
 /*
@@ -65,3 +70,11 @@ val User.langPref: String get() = prefLang ?: ""
 val User.themePref: String get() = prefTheme ?: ""
 val User.accentPref: String get() = prefAccent ?: ""
 val User.inputFormatPref: String get() = prefInputFormat ?: ""
+
+/**
+ * Null-tolerant reader for the avatar file name.
+ *
+ * Empty rather than null so callers can test it without a null check; [AvatarStorage.urlOf]
+ * turns the empty string back into "no avatar".
+ */
+val User.avatarFileName: String get() = avatarFile ?: ""

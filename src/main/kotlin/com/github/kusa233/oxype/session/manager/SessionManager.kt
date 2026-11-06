@@ -9,6 +9,7 @@ import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_INVITE_UU
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.STORAGE
 import com.github.kusa233.oxype.user.manager.UserManager
+import com.github.kusa233.oxype.user.AvatarStorage
 import com.github.kusa233.oxype.session.invite.InviteUuid
 import java.nio.charset.StandardCharsets
 
@@ -63,6 +64,30 @@ object SessionManager {
 
         // Keep the owner visible as a member.
         session.ensureOwnerIsMember()
+        return session
+    }
+
+    /**
+     * Replaces this session's avatar and returns the updated record.
+     *
+     * Caller must already have checked that the caller is an admin; this is storage
+     * bookkeeping only. The file is written before the record names it, so a failed
+     * write leaves the previous picture in use.
+     */
+    fun updateAvatar(sessionId: Long, image: AvatarStorage.Accepted): Session? {
+        val session = getSession(sessionId) ?: return null
+        val fileName = AvatarStorage.store(AvatarStorage.Owner.SESSION, sessionId, image)
+        session.avatarFile = fileName
+        saveSession(session)
+        return session
+    }
+
+    /** Removes this session's avatar, leaving it to draw as an initial again. */
+    fun removeAvatar(sessionId: Long): Session? {
+        val session = getSession(sessionId) ?: return null
+        AvatarStorage.removeAll(AvatarStorage.Owner.SESSION, sessionId)
+        session.avatarFile = null
+        saveSession(session)
         return session
     }
 

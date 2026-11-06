@@ -180,6 +180,26 @@
     let styleSourcesSaveBtnEl;
     let styleSourcesResetBtnEl;
 
+    // Avatar toast and the conversation-avatar controls inside Conversation Info.
+    let avatarDialogEl;
+    let openAvatarBtnEl;
+    let closeAvatarBtnEl;
+    let avatarPreviewEl;
+    let avatarHintEl;
+    let avatarFileInputEl;
+    let avatarChooseBtnEl;
+    let avatarRemoveBtnEl;
+    let ssAvatarPreviewEl;
+    let ssAvatarHintEl;
+    let ssAvatarFileInputEl;
+    let ssAvatarChooseBtnEl;
+    let ssAvatarRemoveBtnEl;
+    /** What the server has said about each avatar, keyed "user:7" / "session:22". */
+    const avatarUrlCache = new Map();
+    let avatarMaxBytes = 3 * 1024 * 1024;
+    /** The conversation whose avatar the settings toast is currently editing. */
+    let ssAvatarTargetSessionId = null;
+
     // Style source security warning, built on first use (see the builder function)
     let styleSourcesRiskDialogEl;
     let styleSourcesRiskScrimEl;
@@ -1073,6 +1093,20 @@
         styleSourcesSaveBtnEl = document.getElementById('styleSourcesSaveBtn');
         styleSourcesResetBtnEl = document.getElementById('styleSourcesResetBtn');
 
+        avatarDialogEl = document.getElementById('avatarDialog');
+        openAvatarBtnEl = document.getElementById('openAvatarBtn');
+        closeAvatarBtnEl = document.getElementById('closeAvatarBtn');
+        avatarPreviewEl = document.getElementById('avatarPreview');
+        avatarHintEl = document.getElementById('avatarHint');
+        avatarFileInputEl = document.getElementById('avatarFileInput');
+        avatarChooseBtnEl = document.getElementById('avatarChooseBtn');
+        avatarRemoveBtnEl = document.getElementById('avatarRemoveBtn');
+        ssAvatarPreviewEl = document.getElementById('ssAvatarPreview');
+        ssAvatarHintEl = document.getElementById('ssAvatarHint');
+        ssAvatarFileInputEl = document.getElementById('ssAvatarFileInput');
+        ssAvatarChooseBtnEl = document.getElementById('ssAvatarChooseBtn');
+        ssAvatarRemoveBtnEl = document.getElementById('ssAvatarRemoveBtn');
+
         // The security warning is built on demand rather than read from the page: a
         // user-supplied chat.html performs the save too, and such a page will not
         // contain markup added here. See buildStyleSourcesRiskDialog().
@@ -1163,6 +1197,33 @@
         if (closeStyleSourcesBtnEl) closeStyleSourcesBtnEl.addEventListener('click', closeAllDialogs);
         if (styleSourcesSaveBtnEl) styleSourcesSaveBtnEl.addEventListener('click', handleSaveStyleSources);
         if (styleSourcesResetBtnEl) styleSourcesResetBtnEl.addEventListener('click', handleResetStyleSources);
+
+        if (openAvatarBtnEl) openAvatarBtnEl.addEventListener('click', openAvatarDialog);
+        if (closeAvatarBtnEl) closeAvatarBtnEl.addEventListener('click', closeAllDialogs);
+        if (avatarChooseBtnEl && avatarFileInputEl) {
+            avatarChooseBtnEl.addEventListener('click', () => avatarFileInputEl.click());
+        }
+        if (avatarFileInputEl) {
+            avatarFileInputEl.addEventListener('change', () => {
+                const file = avatarFileInputEl.files && avatarFileInputEl.files[0];
+                // Cleared so picking the same file twice still raises a change event.
+                avatarFileInputEl.value = '';
+                handleAvatarFilePicked(file);
+            });
+        }
+        if (avatarRemoveBtnEl) avatarRemoveBtnEl.addEventListener('click', removeAvatar);
+
+        if (ssAvatarChooseBtnEl && ssAvatarFileInputEl) {
+            ssAvatarChooseBtnEl.addEventListener('click', () => ssAvatarFileInputEl.click());
+        }
+        if (ssAvatarFileInputEl) {
+            ssAvatarFileInputEl.addEventListener('change', () => {
+                const file = ssAvatarFileInputEl.files && ssAvatarFileInputEl.files[0];
+                ssAvatarFileInputEl.value = '';
+                handleSessionAvatarFilePicked(file);
+            });
+        }
+        if (ssAvatarRemoveBtnEl) ssAvatarRemoveBtnEl.addEventListener('click', removeSessionAvatar);
 
         // The security warning controls are bound when it is built, on first save.
 
@@ -1357,7 +1418,7 @@
         const dialogs = [
             sessionOptionsDialogEl, sessionSettingsDialogEl, membersDialogEl,
             memberManageDialogEl, settingsDialogEl, styleSourcesDialogEl,
-            styleSourcesRiskDialogEl
+            styleSourcesRiskDialogEl, avatarDialogEl
         ];
         return dialogs.some((dialog) => dialog && dialog.style.display !== 'none');
     }
@@ -1369,13 +1430,17 @@
         [dialogOverlayEl, sessionOptionsDialogEl, sessionSettingsDialogEl, membersDialogEl,
             memberManageDialogEl,
             settingsDialogEl, styleSourcesDialogEl, styleSourcesRiskDialogEl,
-            styleSourcesRiskScrimEl].forEach(el => {
+            styleSourcesRiskScrimEl, avatarDialogEl].forEach(el => {
             if (el) el.style.display = 'none';
         });
 
         // Closing abandons the pending per-member action, so a stale target can never
         // be acted on by a later click.
         memberManageTarget = null;
+
+        // Same for the conversation avatar: an upload that outlives the toast must not
+        // be addressed to whichever conversation is opened next.
+        ssAvatarTargetSessionId = null;
 
         // Escape or an overlay click abandons a pending acknowledgement, so the
         // confirmed values must not survive to be saved by a later click.
@@ -1408,6 +1473,405 @@
         // Repainted on open so the row shows the format actually in force, even if the
         // account value arrived from another client while this dialog was closed.
         paintMessageFormatTrigger();
+    }
+
+    // -------------------------------------------------------------- avatar -----
+
+    /** Cache key for one avatar, kept apart per kind so account 7 != session 7. */
+    function avatarCacheKey(kind, id) {
+        return `${kind}:${id}`;
+    }
+
+    /**
+     * The URL known for an avatar, or '' when it has none.
+     *
+     * `undefined` and `''` are deliberately different: an unknown avatar has simply not
+     * been looked up, while an empty string is the server saying there is no picture.
+     * Callers may fetch on a miss and must not on an empty answer.
+     */
+    function cachedAvatarUrl(kind, id) {
+        if (id === null || id === undefined || id === '') return '';
+        const key = avatarCacheKey(kind, id);
+        return avatarUrlCache.has(key) ? avatarUrlCache.get(key) : undefined;
+    }
+
+    /**
+     * What should actually be put in an <img> for one avatar.
+     *
+     * The picture kept in local storage is preferred over its URL: it is already here,
+     * so drawing it costs nothing. It is only used while it belongs to the same URL,
+     * and a replaced avatar is stored under a new file name, so a stale entry can never
+     * be painted over its replacement.
+     */
+    function avatarSource(kind, id, url) {
+        const stored = window.OxypeAvatars ? window.OxypeAvatars.get(kind, id) : null;
+        if (stored && stored.url === url) {
+            return { src: stored.dataUrl, cached: true };
+        }
+        return { src: url || '', cached: false };
+    }
+
+    /** Records what the server said about one avatar and repaints its copies. */
+    function applyAvatarUrl(kind, id, url) {
+        if (id === null || id === undefined || id === '') return;
+        avatarUrlCache.set(avatarCacheKey(kind, id), url || '');
+        repaintAvatars(kind, id);
+        // The bytes are brought in step afterwards, so the next paint has them to draw
+        // with. Nothing waits for it.
+        syncAvatar(kind, id, url || '');
+    }
+
+    /**
+     * Brings one avatar's stored bytes in step with the file on the server.
+     *
+     * The hash is asked for before the picture, so an unchanged avatar costs one small
+     * request instead of the image again, and a replaced one is noticed even though its
+     * URL is the only thing that changed.
+     */
+    function syncAvatar(kind, id, url) {
+        if (!window.OxypeAvatars || !window.OxypeCore) return Promise.resolve();
+        if (id === null || id === undefined || id === '') return Promise.resolve();
+        return window.OxypeAvatars.sync(kind, id, url).then(result => {
+            if (result && result.changed) {
+                repaintAvatars(kind, id);
+            }
+        }).catch(err => {
+            console.warn(`[Classic] Avatar sync for ${kind}:${id} skipped:`, err && err.message);
+        });
+    }
+
+    /**
+     * Draws an avatar element in whichever state it should be.
+     *
+     * The frame stays square in this skin (`--cl-radius: 0`), so the picture is square
+     * too: a rounded avatar here would be the only curved corner on the page.
+     */
+    function paintAvatarElement(el, kind, id, initialChar) {
+        if (!el) return;
+        const url = cachedAvatarUrl(kind, id);
+        const source = url ? avatarSource(kind, id, url) : { src: '', cached: false };
+        if (source.src) {
+            el.classList.add('has-image');
+            const img = el.firstElementChild;
+            if (!img || img.tagName !== 'IMG' || img.getAttribute('src') !== source.src) {
+                el.innerHTML = `<img src="${escapeHtml(source.src)}" alt="" loading="lazy" decoding="async">`;
+            }
+        } else {
+            el.classList.remove('has-image');
+            el.textContent = initialChar;
+        }
+    }
+
+    /** Repaints every element currently showing one account's or session's avatar. */
+    function repaintAvatars(kind, id) {
+        if (cachedAvatarUrl(kind, id) === undefined) return;
+        const attr = kind === 'user' ? 'data-avatar-user' : 'data-avatar-session';
+        const selector = `[${attr}="${String(id).replace(/"/g, '\\"')}"]`;
+        const nodes = document.querySelectorAll(selector);
+        for (let i = 0; i < nodes.length; i++) {
+            paintAvatarElement(nodes[i], kind, id, nodes[i].dataset.avatarInitial || '?');
+        }
+    }
+
+    /**
+     * Asks the server for one account's avatar, once.
+     *
+     * An unknown avatar is marked as "no picture" before the request so a transcript
+     * with hundreds of rows from the same person sends one request, not hundreds.
+     */
+    function requestUserAvatar(id) {
+        if (id === null || id === undefined || id === '') return;
+        if (cachedAvatarUrl('user', id) !== undefined) return;
+        avatarUrlCache.set(avatarCacheKey('user', id), '');
+        if (!window.OxypeCore) return;
+        window.OxypeCore.getAvatar(id).then(data => {
+            if (data && typeof data.avatarUrl === 'string') {
+                avatarUrlCache.set(avatarCacheKey('user', id), data.avatarUrl);
+                repaintAvatars('user', id);
+                syncAvatar('user', id, data.avatarUrl);
+            }
+        }).catch(err => {
+            console.warn(`[Classic] getAvatar/${id} skipped:`, err && err.message);
+        });
+    }
+
+    /** Same, for a conversation; the list endpoint reports them in bulk. */
+    function requestSessionAvatar(id) {
+        if (id === null || id === undefined || id === '') return;
+        if (cachedAvatarUrl('session', id) !== undefined) return;
+        avatarUrlCache.set(avatarCacheKey('session', id), '');
+        loadSessionAvatarsFromList();
+    }
+
+    /** Fetches the joined sessions and seeds every session avatar they report. */
+    let sessionAvatarSweepInFlight = false;
+    function loadSessionAvatarsFromList() {
+        if (sessionAvatarSweepInFlight) return;
+        if (!window.OxypeCore) return;
+        const stored = auth();
+        if (!stored || !stored.userId) return;
+        sessionAvatarSweepInFlight = true;
+        // `getJoinedSessions` reports bare ids, so they are resolved through the batch
+        // `getSessions` call -- the endpoint that also carries `avatarUrl`. One request
+        // for every joined conversation, rather than one per row.
+        window.OxypeCore.getJoinedSessions(stored.userId).then(joined => {
+            const ids = Array.isArray(joined) ? joined : [];
+            if (ids.length === 0) return [];
+            return window.OxypeCore.getSessions(ids);
+        }).then(list => {
+            if (!Array.isArray(list)) return;
+            list.forEach(session => {
+                if (!session || typeof session !== 'object') return;
+                const sid = session.sessionId !== undefined ? session.sessionId : session.id;
+                if (sid === undefined || sid === null) return;
+                if (typeof session.avatarUrl === 'string') {
+                    avatarUrlCache.set(avatarCacheKey('session', sid), session.avatarUrl);
+                    repaintAvatars('session', sid);
+                    syncAvatar('session', sid, session.avatarUrl);
+                }
+            });
+        }).catch(err => {
+            console.warn('[Classic] Session avatar sweep skipped:', err && err.message);
+        }).then(() => {
+            sessionAvatarSweepInFlight = false;
+        });
+    }
+
+    /** Opens the avatar toast and paints what the account has now. */
+    async function openAvatarDialog() {
+        closeAllDialogs();
+        if (dialogOverlayEl) dialogOverlayEl.style.display = 'block';
+        if (avatarDialogEl) avatarDialogEl.style.display = 'block';
+        await loadAvatarState();
+    }
+
+    /**
+     * Fetches the account's current avatar and paints it into the toast.
+     *
+     * A failed read is not an error the user needs to see: the toast still works, it
+     * just opens with whatever the page already knew.
+     */
+    async function loadAvatarState() {
+        const stored = auth();
+        if (!stored || !stored.userId) {
+            paintAvatarPreview(currentUser && currentUser.avatarUrl, currentUser && currentUser.username);
+            return;
+        }
+        try {
+            const data = await window.OxypeCore.getAvatar(stored.userId, stored.token) || {};
+            if (typeof data.avatarUrl === 'string') {
+                avatarUrlCache.set(avatarCacheKey('user', stored.userId), data.avatarUrl);
+            }
+            if (typeof data.maxBytes === 'number' && data.maxBytes > 0) {
+                avatarMaxBytes = data.maxBytes;
+            }
+            paintAvatarPreview(data.avatarUrl, (currentUser && currentUser.username) || '');
+            if (typeof data.avatarUrl === 'string' && data.avatarUrl) {
+                await syncAvatar('user', stored.userId, data.avatarUrl);
+                paintAvatarPreview(data.avatarUrl, (currentUser && currentUser.username) || '');
+            }
+        } catch (err) {
+            console.warn('[Classic] Failed to load the avatar:', err && err.message);
+            paintAvatarPreview(currentUser && currentUser.avatarUrl, currentUser && currentUser.username);
+        }
+    }
+
+    /** Draws an avatar into the toast's preview box, or its initial when it has none. */
+    function paintAvatarPreview(url, name) {
+        if (!avatarPreviewEl) return;
+        const safeName = String(name || '');
+        const stored = auth();
+        const userId = (currentUser && currentUser.id) || (stored && stored.userId);
+        const source = url ? avatarSource('user', userId, url) : { src: '' };
+        if (source.src) {
+            avatarPreviewEl.classList.add('has-image');
+            avatarPreviewEl.innerHTML = `<img src="${escapeHtml(source.src)}" alt="" decoding="async">`;
+        } else {
+            avatarPreviewEl.classList.remove('has-image');
+            avatarPreviewEl.textContent = safeName.trim().charAt(0).toUpperCase() || '?';
+        }
+        if (avatarHintEl) {
+            const key = url ? 'chat.avatarHint' : 'chat.avatarHintNone';
+            const fallback = url
+                ? 'Pick an image up to {max} MB. PNG, JPEG, WebP and GIF are accepted, and it will be cropped to a square.'
+                : 'No avatar yet. Pick an image up to {max} MB (PNG, JPEG, WebP or GIF).';
+            avatarHintEl.textContent = getI18nText(key, fallback, {
+                max: String(Math.round(avatarMaxBytes / (1024 * 1024)))
+            });
+        }
+        if (avatarRemoveBtnEl) avatarRemoveBtnEl.disabled = !url;
+    }
+
+    /**
+     * Reads a picked file into a data URL, then uploads it.
+     *
+     * Type and size are checked here so an obviously unsuitable file produces an
+     * immediate message instead of a round trip. The server checks again by magic
+     * bytes: the browser's idea of a file's type comes from its name, not its content.
+     */
+    function handleAvatarFilePicked(file) {
+        if (!file) return;
+        const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+        if (allowed.indexOf(file.type) === -1) {
+            toast(getI18nText('chat.avatarWrongType', 'That file is not a PNG, JPEG, WebP or GIF image.'), 'error');
+            return;
+        }
+        if (file.size > avatarMaxBytes) {
+            const max = Math.round(avatarMaxBytes / (1024 * 1024));
+            toast(getI18nText('chat.avatarTooLarge', 'That image is larger than {max} MB. Please choose a smaller one.', { max: String(max) }), 'error');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async () => {
+            if (avatarPreviewEl) avatarPreviewEl.classList.add('is-uploading');
+            if (avatarHintEl) avatarHintEl.textContent = getI18nText('chat.avatarHintUploading', 'Uploading…');
+            try {
+                await uploadAvatarData(String(reader.result || ''));
+            } finally {
+                if (avatarPreviewEl) avatarPreviewEl.classList.remove('is-uploading');
+            }
+        };
+        reader.onerror = () => {
+            toast(getI18nText('chat.avatarReadFailed', 'That image could not be read.'), 'error');
+        };
+        reader.readAsDataURL(file);
+    }
+
+    /** Sends one avatar payload and repaints every surface that shows it. */
+    async function uploadAvatarData(dataUrl) {
+        const stored = auth();
+        if (!stored || !stored.userId) return;
+        try {
+            const data = await window.OxypeCore.uploadAvatar({ kind: 'user', id: stored.userId, image: dataUrl }) || {};
+            applyAvatarUrl('user', stored.userId, data.avatarUrl || '');
+            paintAvatarPreview(data.avatarUrl || '', (currentUser && currentUser.username) || '');
+            toast(getI18nText('chat.avatarSaved', 'Avatar updated.'), 'success');
+        } catch (err) {
+            const reason = (err && err.message) || 'unknown error';
+            toast(getI18nText('chat.avatarFailed', 'Failed to update the avatar: {reason}', { reason }), 'error');
+        }
+    }
+
+    /** Removes this account's avatar; every drawn copy falls back to its initial. */
+    async function removeAvatar() {
+        const stored = auth();
+        if (!stored || !stored.userId) return;
+        try {
+            await window.OxypeCore.removeAvatar({ kind: 'user', id: stored.userId });
+            applyAvatarUrl('user', stored.userId, '');
+            paintAvatarPreview('', (currentUser && currentUser.username) || '');
+            toast(getI18nText('chat.avatarRemoved', 'Avatar removed.'), 'success');
+        } catch (err) {
+            const reason = (err && err.message) || 'unknown error';
+            toast(getI18nText('chat.avatarFailed', 'Failed to update the avatar: {reason}', { reason }), 'error');
+        }
+    }
+
+    /**
+     * Uploads a picked image as the open conversation's avatar.
+     *
+     * The conversation id is captured up front because the toast can be closed while
+     * the upload is still in flight, and it must still address the conversation it was
+     * started for.
+     */
+    function handleSessionAvatarFilePicked(file) {
+        if (!file || !ssAvatarTargetSessionId) return;
+        const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+        if (allowed.indexOf(file.type) === -1) {
+            toast(getI18nText('chat.avatarWrongType', 'That file is not a PNG, JPEG, WebP or GIF image.'), 'error');
+            return;
+        }
+        if (file.size > avatarMaxBytes) {
+            const max = Math.round(avatarMaxBytes / (1024 * 1024));
+            toast(getI18nText('chat.avatarTooLarge', 'That image is larger than {max} MB. Please choose a smaller one.', { max: String(max) }), 'error');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async () => {
+            const sessionId = ssAvatarTargetSessionId;
+            if (ssAvatarPreviewEl) ssAvatarPreviewEl.classList.add('is-uploading');
+            if (ssAvatarHintEl) ssAvatarHintEl.textContent = getI18nText('chat.avatarHintUploading', 'Uploading…');
+            try {
+                const data = await window.OxypeCore.uploadAvatar({
+                    kind: 'session', id: sessionId, image: String(reader.result || '')
+                }) || {};
+                applyAvatarUrl('session', sessionId, data.avatarUrl || '');
+                if (String(activeSessionId) === String(sessionId) && activeSessionInfo) {
+                    activeSessionInfo.avatarUrl = data.avatarUrl || '';
+                }
+                paintSessionAvatarPreview(data.avatarUrl || '');
+                toast(getI18nText('chat.sessionAvatarSaved', 'Conversation avatar updated.'), 'success');
+            } catch (err) {
+                const reason = (err && err.message) || 'unknown error';
+                toast(getI18nText('chat.sessionAvatarFailed', 'Failed to update the conversation avatar: {reason}', { reason }), 'error');
+            } finally {
+                if (ssAvatarPreviewEl) ssAvatarPreviewEl.classList.remove('is-uploading');
+            }
+        };
+        reader.onerror = () => {
+            toast(getI18nText('chat.avatarReadFailed', 'That image could not be read.'), 'error');
+        };
+        reader.readAsDataURL(file);
+    }
+
+    /** Removes the open conversation's avatar. */
+    async function removeSessionAvatar() {
+        if (!ssAvatarTargetSessionId) return;
+        const sessionId = ssAvatarTargetSessionId;
+        try {
+            await window.OxypeCore.removeAvatar({ kind: 'session', id: sessionId });
+            applyAvatarUrl('session', sessionId, '');
+            if (String(activeSessionId) === String(sessionId) && activeSessionInfo) {
+                activeSessionInfo.avatarUrl = '';
+            }
+            paintSessionAvatarPreview('');
+            toast(getI18nText('chat.sessionAvatarRemoved', 'Conversation avatar removed.'), 'success');
+        } catch (err) {
+            const reason = (err && err.message) || 'unknown error';
+            toast(getI18nText('chat.sessionAvatarFailed', 'Failed to update the conversation avatar: {reason}', { reason }), 'error');
+        }
+    }
+
+    /**
+     * Draws the conversation avatar inside Conversation Info.
+     *
+     * Only an owner or admin may change it, so for everyone else the controls are
+     * hidden rather than shown and refused -- the server refuses them too.
+     */
+    function paintSessionAvatarPreview(url) {
+        const name = (activeSessionInfo && activeSessionInfo.sessionName) || '';
+        if (ssAvatarPreviewEl) {
+            const source = url ? avatarSource('session', ssAvatarTargetSessionId, url) : { src: '' };
+            if (source.src) {
+                ssAvatarPreviewEl.classList.add('has-image');
+                ssAvatarPreviewEl.innerHTML = `<img src="${escapeHtml(source.src)}" alt="" decoding="async">`;
+            } else {
+                ssAvatarPreviewEl.classList.remove('has-image');
+                ssAvatarPreviewEl.textContent = name.trim().charAt(0).toUpperCase() || '#';
+            }
+        }
+        if (ssAvatarHintEl) {
+            const key = url ? 'chat.sessionAvatarHint' : 'chat.sessionAvatarHintNone';
+            const fallback = url
+                ? 'Pick an image up to {max} MB. PNG, JPEG, WebP and GIF are accepted, and it will be cropped to a square.'
+                : 'This conversation has no avatar yet. Pick an image up to {max} MB.';
+            ssAvatarHintEl.textContent = getI18nText(key, fallback, {
+                max: String(Math.round(avatarMaxBytes / (1024 * 1024)))
+            });
+        }
+        if (ssAvatarRemoveBtnEl) ssAvatarRemoveBtnEl.disabled = !url;
+
+        const mayEdit = Boolean(canModerate());
+        if (ssAvatarChooseBtnEl) ssAvatarChooseBtnEl.style.display = mayEdit ? '' : 'none';
+        if (ssAvatarRemoveBtnEl) ssAvatarRemoveBtnEl.style.display = mayEdit ? '' : 'none';
+        if (ssAvatarHintEl && !mayEdit) {
+            ssAvatarHintEl.textContent = getI18nText(
+                'chat.sessionAvatarAdminOnly',
+                'Only the conversation owner or an admin can change its avatar.'
+            );
+        }
     }
 
     /**
@@ -1894,7 +2358,18 @@
     function renderUserProfile() {
         if (!currentUser) return;
         const name = currentUser.username || `User #${currentUser.id}`;
-        if (userAvatarEl) userAvatarEl.textContent = name.trim().charAt(0).toUpperCase() || 'U';
+        const initial = name.trim().charAt(0).toUpperCase() || 'U';
+        if (userAvatarEl) {
+            userAvatarEl.dataset.avatarUser = String(currentUser.id);
+            userAvatarEl.dataset.avatarInitial = initial;
+            const known = cachedAvatarUrl('user', currentUser.id);
+            if (known === undefined) {
+                userAvatarEl.textContent = initial;
+                requestUserAvatar(currentUser.id);
+            } else {
+                paintAvatarElement(userAvatarEl, 'user', currentUser.id, initial);
+            }
+        }
         if (userDisplayNameEl) userDisplayNameEl.textContent = name;
         if (userIdBadgeEl) userIdBadgeEl.textContent = `ID: ${currentUser.id}`;
     }
@@ -1971,12 +2446,21 @@
             const avatarChar = sessionName.trim().charAt(0).toUpperCase() || '#';
             // The second line carries the latest message preview, filled in below.
             btn.innerHTML = `
-                <div class="session-avatar">${escapeHtml(avatarChar)}</div>
+                <div class="session-avatar" data-avatar-session="${escapeHtml(sessionId)}" data-avatar-initial="${escapeHtml(avatarChar)}">${escapeHtml(avatarChar)}</div>
                 <div class="session-details">
                     <div class="session-name">${escapeHtml(sessionName)}</div>
                     <div class="session-subtext session-last-message"></div>
                 </div>
             `;
+
+            // Seeded from the conversation record when it already carries a picture, and
+            // otherwise left to the bulk sweep that fills in the rest.
+            if (isObject && typeof session.avatarUrl === 'string') {
+                avatarUrlCache.set(avatarCacheKey('session', sessionId), session.avatarUrl);
+                paintAvatarElement(btn.querySelector('.session-avatar'), 'session', sessionId, avatarChar);
+            } else {
+                requestSessionAvatar(sessionId);
+            }
 
             btn.addEventListener('click', () => selectSession(sessionId));
             sessionListEl.appendChild(btn);
@@ -3075,14 +3559,29 @@
         // markdown body is already HTML by the time it lands), so the editor seeds its
         // textarea from this copy instead of parsing the DOM back into text.
         row.oxypeMessage = { text: msg.text, format: msg.format === 'markdown' ? 'markdown' : 'text' };
+        // The sender id is stamped on the avatar itself so a picture arriving later can
+        // find every row this account wrote, including ones drawn long before it.
+        const avatarOwnerAttr = msg.senderId !== undefined && msg.senderId !== null
+            ? ` data-avatar-user="${escapeHtml(msg.senderId)}"`
+            : '';
         row.innerHTML = `
-            <div class="message-avatar" aria-hidden="true">${escapeHtml(avatarChar)}</div>
+            <div class="message-avatar"${avatarOwnerAttr} data-avatar-initial="${escapeHtml(avatarChar)}" aria-hidden="true">${escapeHtml(avatarChar)}</div>
             <div class="message-bubble">
                 <div class="message-sender${continuesGroup ? ' is-hidden' : ''}">${escapeHtml(senderName)}</div>
                 <div class="message-content${msg.format === 'markdown' ? ' message-content-markdown' : ''}">${renderMessageBody(msg.text, msg.format)}</div>
                 <div class="message-timestamp">${escapeHtml(msg.timestamp)}</div>
             </div>
         `;
+
+        if (msg.senderId !== undefined && msg.senderId !== null) {
+            const knownSenderAvatar = cachedAvatarUrl('user', msg.senderId);
+            if (knownSenderAvatar === undefined) {
+                requestUserAvatar(msg.senderId);
+            } else {
+                paintAvatarElement(row.querySelector('.message-avatar'), 'user', msg.senderId, avatarChar);
+            }
+        }
+
         return row;
     }
 
@@ -3455,12 +3954,19 @@
 
         const avatarChar = sessionName.trim().charAt(0).toUpperCase() || '#';
         btn.innerHTML = `
-            <div class="session-avatar">${escapeHtml(avatarChar)}</div>
+            <div class="session-avatar" data-avatar-session="${escapeHtml(sessionId)}" data-avatar-initial="${escapeHtml(avatarChar)}">${escapeHtml(avatarChar)}</div>
             <div class="session-details">
                 <div class="session-name">${escapeHtml(sessionName)}</div>
                 <div class="session-subtext session-last-message"></div>
             </div>
         `;
+        // A brand-new conversation has no picture yet, so it is asked for like any other.
+        const knownNewSessionAvatar = cachedAvatarUrl('session', sessionId);
+        if (knownNewSessionAvatar === undefined) {
+            requestSessionAvatar(sessionId);
+        } else {
+            paintAvatarElement(btn.querySelector('.session-avatar'), 'session', sessionId, avatarChar);
+        }
         btn.addEventListener('click', () => selectSession(sessionId));
         sessionListEl.appendChild(btn);
     }
@@ -3575,6 +4081,18 @@
         if (sessionManageSectionEl) sessionManageSectionEl.style.display = canManage ? 'block' : 'none';
         if (ssNameInputEl) ssNameInputEl.value = info.sessionName || '';
         if (ssDescInputEl) ssDescInputEl.value = info.description || '';
+
+        // The conversation avatar lives in this toast too, so the target id is set here
+        // rather than only on open: an upload must address the conversation the toast is
+        // showing even if it was opened by another route.
+        ssAvatarTargetSessionId = activeSessionId;
+        const knownSessionAvatar = cachedAvatarUrl('session', activeSessionId);
+        if (knownSessionAvatar === undefined) {
+            requestSessionAvatar(activeSessionId);
+        } else {
+            syncAvatar('session', activeSessionId, knownSessionAvatar);
+        }
+        paintSessionAvatarPreview(knownSessionAvatar || '');
     }
 
     /** Saves the conversation name/description (owner or admin). */
@@ -3874,15 +4392,23 @@
             }
 
             const name = u.username || `User #${memberId}`;
+            const memberAvatarChar = name.trim().charAt(0).toUpperCase() || '#';
             const row = document.createElement('div');
             row.className = 'member-item';
             row.innerHTML = `
-                <div class="member-avatar">${escapeHtml(name.trim().charAt(0).toUpperCase() || '#')}</div>
+                <div class="member-avatar" data-avatar-user="${escapeHtml(memberId)}" data-avatar-initial="${escapeHtml(memberAvatarChar)}">${escapeHtml(memberAvatarChar)}</div>
                 <div class="member-meta">
                     <div class="member-name">${escapeHtml(name)}</div>
                     <div class="member-role">${escapeHtml(role)}</div>
                 </div>
             `;
+
+            const knownMemberAvatar = cachedAvatarUrl('user', memberId);
+            if (knownMemberAvatar === undefined) {
+                requestUserAvatar(memberId);
+            } else {
+                paintAvatarElement(row.querySelector('.member-avatar'), 'user', memberId, memberAvatarChar);
+            }
 
             // Owner and admins may manage members, but non-admin users cannot.
             // Owner can manage anyone except themselves; admin can only manage non-owner, non-admin members.

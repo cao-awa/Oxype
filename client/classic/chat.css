@@ -1231,6 +1231,138 @@ body {
     flex-shrink: 0;
 }
 
+/* ---------------------------------------------------------------------------
+   Uploaded avatars
+
+   An avatar with a picture keeps the exact frame its initial had -- same box,
+   same `--cl-radius` (which is 0 in this skin) -- and only swaps its contents,
+   so a conversation with a picture and one without still line up in the list.
+   The <img> fills the box and inherits the radius, which is why the rules below
+   never restate a size or a corner.
+   --------------------------------------------------------------------------- */
+.session-avatar.has-image,
+.message-avatar.has-image,
+.user-avatar-sm.has-image,
+.member-avatar.has-image,
+.session-settings-avatar.has-image {
+    background-color: transparent;
+    overflow: hidden;
+    padding: 0;
+}
+
+.session-avatar.has-image img,
+.message-avatar.has-image img,
+.user-avatar-sm.has-image img,
+.member-avatar.has-image img,
+.session-settings-avatar.has-image img {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    object-fit: cover;
+    display: block;
+    /* The bezel is drawn by the frame, so the picture must not sit on top of it. */
+    border: 0;
+}
+
+/* A hidden avatar keeps its space; only its contents vanish. The <img> inherits
+   `visibility: hidden` from the frame, so nothing else is needed here. */
+
+/* The big preview inside the avatar toast. */
+.avatar-preview {
+    width: 96px;
+    height: 96px;
+    flex-shrink: 0;
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    display: grid;
+    place-items: center;
+    font-family: var(--cl-serif);
+    font-weight: 700;
+    font-size: 2rem;
+    overflow: hidden;
+    user-select: none;
+}
+
+.avatar-preview img {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    object-fit: cover;
+    display: block;
+}
+
+/* The live conversation avatar in Conversation Info. */
+.session-settings-avatar {
+    width: 64px;
+    height: 64px;
+    flex-shrink: 0;
+    border-radius: var(--cl-radius);
+    background-color: var(--cl-face);
+    color: var(--cl-text);
+    border: 1px solid;
+    border-color: var(--cl-edge-light) var(--cl-edge-dark) var(--cl-edge-dark) var(--cl-edge-light);
+    display: grid;
+    place-items: center;
+    font-family: var(--cl-serif);
+    font-weight: 700;
+    font-size: 1.4rem;
+    overflow: hidden;
+    user-select: none;
+}
+
+.session-settings-avatar img {
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    object-fit: cover;
+    display: block;
+}
+
+.avatar-hint {
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--cl-text-dim);
+    margin: 0 0 9px;
+}
+
+.avatar-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-top: 10px;
+}
+
+/* The conversation variant: avatar on the left, its hint and buttons on the right. */
+.avatar-ss-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.avatar-ss-actions {
+    flex: 1;
+    min-width: 0;
+}
+
+.avatar-ss-row .avatar-hint {
+    margin: 0;
+}
+
+/* Hidden file input: the visible control is a styled button. */
+.avatar-file-input {
+    display: none;
+}
+
+/* Marks the picker while an upload is in flight. */
+.avatar-preview.is-uploading,
+.session-settings-avatar.is-uploading {
+    opacity: 0.55;
+}
+
 /* Style source toast: explanatory hint plus the three path fields */
 .style-sources-hint {
     display: flex;

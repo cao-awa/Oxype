@@ -23,6 +23,8 @@ import com.github.kusa233.oxype.exception.request.MissingParameterException
 import com.github.kusa233.oxype.message.MessageManager
 import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.manager.SessionManager
+import com.github.kusa233.oxype.asset.ClientAssets
+import com.github.kusa233.oxype.user.AvatarStorage
 import com.github.kusa233.oxype.user.StyleSources
 import com.github.kusa233.oxype.user.User
 import com.github.kusa233.oxype.user.UserSettings
@@ -406,6 +408,7 @@ object OxypeHttpServer {
             "sessionName" set session.sessionName
             "description" set session.description
             "owner" set session.owner
+            "avatarUrl" set AvatarStorage.urlOf(session.avatarFile)
             "admins" set JSONArray { session.adminIds().forEach { add(it) } }
             "members" set JSONArray { session.memberIds().forEach { add(it) } }
             "isOwner" set session.isOwner(viewerId)
@@ -413,12 +416,70 @@ object OxypeHttpServer {
         }
     }
 
-    /** Encodes a member entry as `{ userid, username }`. */
+    /**
+     * Encodes a member entry as `{ userid, username, avatarUrl }`.
+     *
+     * The avatar URL travels with the name because every place a person is drawn -- a
+     * transcript row, the roster, the session list -- already has this view and nothing
+     * else would tell it whether that account has a picture.
+     */
     private fun userView(userid: Long): JSONObject {
         val user = UserManager.getUser(userid)
         return JSONObject {
             "userid" set userid
             "username" set (user?.username ?: "User #$userid")
+            "avatarUrl" set AvatarStorage.urlOf(user?.avatarFile)
+        }
+    }
+
+    /**
+     * Encodes the state of one avatar.
+     *
+     * The dimensions are sent back so the client can reject an oversized picture before
+     * uploading the next time, and `avatarUrl` is always present -- empty when there is
+     * none -- so a caller never has to distinguish "absent key" from "no avatar".
+     */
+    private fun avatarView(owner: AvatarStorage.Owner, id: Long, fileName: String?, displayName: String): JSONObject {
+        return JSONObject {
+            "kind" set if (owner == AvatarStorage.Owner.USER) "user" else "session"
+            "id" set id
+            "name" set displayName
+            "avatarUrl" set AvatarStorage.urlOf(fileName)
+            "hasAvatar" set AvatarStorage.urlOf(fileName).isNotEmpty()
+            "maxBytes" set AvatarStorage.MAX_BYTES
+            "maxEdge" set AvatarStorage.MAX_EDGE
+            "formats" set JSONArray { AvatarStorage.Format.entries.forEach { add(it.mimeType) } }
+        }
+    }
+
+    /**
+     * Whether two accounts are in at least one session together.
+     *
+     * Used to decide whether one may see the other's avatar. Reads the caller's session
+     * list and checks membership of each, which is the same data the session list itself
+     * is built from, so no separate index has to be kept in step.
+     */
+    private fun sharesSessionWith(viewerId: Long, otherId: Long): Boolean {
+        val joined = UserManager.getJoinedSessions(viewerId)
+        return joined.sessions.any { sessionId ->
+            val session = SessionManager.getSession(sessionId) ?: return@any false
+            session.hasMember(viewerId) && session.hasMember(otherId)
+        }
+    }
+
+    /**
+     * Caller-visible view of one client file's content hash.
+     *
+     * `hash` is the only value a cached client needs, but `size` and `modifiedAt` are
+     * sent as well so a caller comparing two answers can tell a replaced file from a
+     * touched one, and a debugging session has more to look at than one opaque string.
+     */
+    private fun hashView(result: ClientAssets.Result): JSONObject {
+        return JSONObject {
+            "path" set result.path
+            "hash" set result.hash
+            "size" set result.size
+            "modifiedAt" set result.modifiedAt
         }
     }
 
@@ -606,8 +667,12 @@ object OxypeHttpServer {
                             )
                         } else if (caller.id == userid) {
                             // The caller's own record: full profile, password redacted.
+                            // `avatarUrl` is added next to the stored `avatarFile`, because
+                            // the page draws the avatar as soon as the profile arrives and
+                            // the on-disk name is not something it can request.
                             JSONEncoder.encodeData(user).also {
                                 it.put("hashedPassword", "HIDDEN")
+                                it.put("avatarUrl", AvatarStorage.urlOf(user.avatarFile))
                             }
                         } else {
                             // Anyone else's record is reduced to the display name.
@@ -798,10 +863,216 @@ object OxypeHttpServer {
                 }
             }
 
+            /**
+             * Stores the caller's own avatar from a base64 image.
+             *
+             * The body is JSON -- `{ "userid": .., "token": .., "image": "data:..." }` --
+             * rather than a multipart form because the client already has the file in
+             * hand as a data URL, and a JSON body needs no multipart parser on either
+             * side. The payload is validated by [AvatarStorage.decode] before anything
+             * touches the disk: format by magic bytes, size by the real limit.
+             */
+            route("uploadAvatar/{userid}") {
+                val userid by placeholder<Long>("userid")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { caller ->
+                            if (caller.id != userid) {
+                                abortWith(
+                                    AuthenticationException("You can only change your own avatar"),
+                                    HttpResponseStatus.FORBIDDEN,
+                                    this
+                                )
+                            }
+
+                            val image = try {
+                                AvatarStorage.decode(json.getString("image"))
+                            } catch (e: AvatarStorage.Rejected) {
+                                abortWith(e, HttpResponseStatus.BAD_REQUEST, this)
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+
+                            val updated = UserManager.updateAvatar(userid, image)
+                                ?: run {
+                                    abortWith(
+                                        IllegalArgumentException("User not found"),
+                                        HttpResponseStatus.NOT_FOUND,
+                                        this
+                                    )
+                                    throw IllegalStateException("Unreachable: the request was aborted")
+                                }
+                            avatarView(AvatarStorage.Owner.USER, userid, updated.avatarFile, updated.username)
+                        }
+                    }
+                }
+            }
+
+            /** Removes the caller's avatar; the account draws as an initial again. */
+            route("removeAvatar/{userid}") {
+                val userid by placeholder<Long>("userid")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { caller ->
+                            if (caller.id != userid) {
+                                abortWith(
+                                    AuthenticationException("You can only change your own avatar"),
+                                    HttpResponseStatus.FORBIDDEN,
+                                    this
+                                )
+                            }
+                            val updated = UserManager.removeAvatar(userid)
+                                ?: run {
+                                    abortWith(
+                                        IllegalArgumentException("User not found"),
+                                        HttpResponseStatus.NOT_FOUND,
+                                        this
+                                    )
+                                    throw IllegalStateException("Unreachable: the request was aborted")
+                                }
+                            avatarView(AvatarStorage.Owner.USER, userid, updated.avatarFile, updated.username)
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Reads an account's avatar URL, for a caller who is allowed to see it.
+             *
+             * An avatar is visible to anyone who can already see the account's name in a
+             * shared session, so membership of a common session is the test rather than
+             * identity: a stranger who shares no session learns nothing.
+             */
+            route("getAvatar/{userid}") {
+                val userid by placeholder<Long>("userid")
+                get {
+                    requireUserFromQuery { caller ->
+                        val target = UserManager.getUser(userid)
+                        if (target == null) {
+                            abortWith(
+                                IllegalArgumentException("User not found"),
+                                HttpResponseStatus.NOT_FOUND,
+                                this
+                            )
+                            throw IllegalStateException("Unreachable: the request was aborted")
+                        }
+                        if (caller.id != userid && !sharesSessionWith(caller.id, userid)) {
+                            abortWith(
+                                AuthenticationException("You share no session with this user"),
+                                HttpResponseStatus.FORBIDDEN,
+                                this
+                            )
+                        }
+                        avatarView(AvatarStorage.Owner.USER, userid, target.avatarFile, target.username)
+                    }
+                }
+            }
+
+            /**
+             * Stores a session's avatar from a base64 image.
+             *
+             * Same permission as the name and description: the owner or an admin, so a
+             * member cannot repaint a group they merely belong to.
+             */
+            route("uploadSessionAvatar/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionAdmin(session, user.id) {
+                                val image = try {
+                                    AvatarStorage.decode(json.getString("image"))
+                                } catch (e: AvatarStorage.Rejected) {
+                                    abortWith(e, HttpResponseStatus.BAD_REQUEST, this)
+                                    throw IllegalStateException("Unreachable: the request was aborted")
+                                }
+
+                                val updated = SessionManager.updateAvatar(sessionId, image)
+                                    ?: run {
+                                        abortWith(
+                                            IllegalArgumentException("Session not found"),
+                                            HttpResponseStatus.NOT_FOUND,
+                                            this
+                                        )
+                                        throw IllegalStateException("Unreachable: the request was aborted")
+                                    }
+                                avatarView(AvatarStorage.Owner.SESSION, sessionId, updated.avatarFile, updated.sessionName)
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Removes a session's avatar (owner or admin). */
+            route("removeSessionAvatar/{sessionId}") {
+                val sessionId by placeholder<Long>("sessionId")
+                post {
+                    requireJsonBody { json ->
+                        requireUser(json) { user ->
+                            val session = requireSession(sessionId)
+
+                            requireSessionAdmin(session, user.id) {
+                                val updated = SessionManager.removeAvatar(sessionId)
+                                    ?: run {
+                                        abortWith(
+                                            IllegalArgumentException("Session not found"),
+                                            HttpResponseStatus.NOT_FOUND,
+                                            this
+                                        )
+                                        throw IllegalStateException("Unreachable: the request was aborted")
+                                    }
+                                avatarView(AvatarStorage.Owner.SESSION, sessionId, updated.avatarFile, updated.sessionName)
+                            }
+                        }
+                    }
+                }
+            }
+
             route("getJoinedSessions/{userid}") {
                 get {
                     requireUserFromQuery { caller ->
                         UserManager.getJoinedSessions(caller.id)
+                    }
+                }
+            }
+
+            /**
+             * Returns the content hash of one file under `client/`.
+             *
+             * A client that keeps an avatar in `localStorage` to avoid refetching it has
+             * no way to notice the file being replaced: the URL in the record changes,
+             * but the copy in storage is keyed by owner, not by URL. Asking for the hash
+             * first turns that into one small request, and the picture is only fetched
+             * when the hash says it actually differs.
+             *
+             * The path arrives as `?path=` rather than as a route segment because it has
+             * slashes in it (`avatar/u1-....png`), which a single placeholder segment
+             * cannot carry. It is client-relative, and absolute paths are refused -- see
+             * [ClientAssets.resolve] for the full set of rules and why each one exists.
+             * The folder is already published as static assets, so this adds no reach
+             * that a plain GET of the same file would not give; it only makes the
+             * comparison cheap.
+             */
+            route("getHash") {
+                get {
+                    requireUserFromQuery {
+                        val raw = arguments()["path"]
+                        if (raw == null) {
+                            abortWith(
+                                IllegalArgumentException("Missing parameter 'path'"),
+                                HttpResponseStatus.BAD_REQUEST,
+                                this
+                            )
+                            throw IllegalStateException("Unreachable: the request was aborted")
+                        }
+                        val result = try {
+                            ClientAssets.hashOf(raw)
+                        } catch (e: ClientAssets.Rejected) {
+                            abortWith(e, HttpResponseStatus.BAD_REQUEST, this)
+                            throw IllegalStateException("Unreachable: the request was aborted")
+                        }
+                        hashView(result)
                     }
                 }
             }
@@ -895,11 +1166,16 @@ object OxypeHttpServer {
                                         it.asLong()
                                     )
                                     if (session != null) {
-                                        add(
-                                            JSONCodec.encode(
-                                                session
-                                            )
-                                        )
+                                        // The encoded record carries `avatarFile`, which is
+                                        // an on-disk name the client cannot use. This list is
+                                        // what draws every conversation at once, so the
+                                        // servable URL is added here rather than leaving each
+                                        // row to ask for its own picture.
+                                        val encoded = JSONCodec.encode(session)
+                                        if (encoded is JSONObject) {
+                                            encoded.put("avatarUrl", AvatarStorage.urlOf(session.avatarFile))
+                                        }
+                                        add(encoded)
                                     }
                                 }
                             }

@@ -489,6 +489,123 @@
         }
 
         /**
+         * Upload an avatar for an account or a session.
+         * POST /uploadAvatar/{userid} or POST /uploadSessionAvatar/{sessionId}
+         *
+         * The image travels as a `data:` URL because that is exactly what a
+         * FileReader produces; the server strips the prefix and validates the bytes
+         * itself, so a mislabelled file is refused there rather than trusted here.
+         *
+         * @param {{kind?: 'user'|'session', id: number|string, image: string}} request
+         * @param {string} [token]
+         * @returns {Promise<{kind: string, id: number, avatarUrl: string, hasAvatar: boolean}|null>}
+         */
+        async uploadAvatar(request = {}, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const kind = request.kind === 'session' ? 'session' : 'user';
+
+            if (request.id === null || request.id === undefined) {
+                throw new Error('An id is required');
+            }
+
+            const path = kind === 'session'
+                ? `/uploadSessionAvatar/${encodeURIComponent(request.id)}`
+                : `/uploadAvatar/${encodeURIComponent(request.id)}`;
+
+            return await this.request(path, {
+                method: 'POST',
+                body: this.authBody(
+                    kind === 'session' ? (storedAuth && storedAuth.userId) : request.id,
+                    authToken,
+                    { image: request.image || '' }
+                )
+            });
+        }
+
+        /**
+         * Remove an avatar, returning it to its initial.
+         * POST /removeAvatar/{userid} or POST /removeSessionAvatar/{sessionId}
+         *
+         * @param {{kind?: 'user'|'session', id: number|string}} request
+         * @param {string} [token]
+         */
+        async removeAvatar(request = {}, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const kind = request.kind === 'session' ? 'session' : 'user';
+
+            if (request.id === null || request.id === undefined) {
+                throw new Error('An id is required');
+            }
+
+            const path = kind === 'session'
+                ? `/removeSessionAvatar/${encodeURIComponent(request.id)}`
+                : `/removeAvatar/${encodeURIComponent(request.id)}`;
+
+            return await this.request(path, {
+                method: 'POST',
+                body: this.authBody(
+                    kind === 'session' ? (storedAuth && storedAuth.userId) : request.id,
+                    authToken,
+                    {}
+                )
+            });
+        }
+
+        /**
+         * Read an avatar's URL for an account.
+         * GET /getAvatar/{userid}?userid=..&token=..
+         *
+         * @param {number|string} userId
+         * @param {string} [token]
+         */
+        async getAvatar(userId, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (storedAuth && storedAuth.userId);
+
+            if (currentUserId === null || currentUserId === undefined) {
+                throw new Error('User ID is required');
+            }
+
+            const endpoint = `/getAvatar/${encodeURIComponent(userId)}${this.authQuery(currentUserId, authToken)}`;
+            return await this.request(endpoint, { method: 'GET' });
+        }
+
+        /**
+         * Read the content hash of one file under `client/`.
+         * GET /getHash?userid=..&token=..&path=..
+         *
+         * The path is client-relative, with no leading slash, and no `/`: it names a
+         * file the server already publishes, nothing else. Absolute paths are refused
+         * by the server, so a caller that has a URL strips the leading slash rather
+         * than the endpoint accepting both spellings.
+         *
+         * A cached picture is kept while this hash still matches. The hash is of the
+         * bytes, not of the name, so a file replaced under the same name is noticed --
+         * which a size or timestamp alone would not reliably do.
+         *
+         * @param {string} path  e.g. "avatar/u38-1a2b3c4d.png"
+         * @param {string} [token]
+         * @returns {Promise<{path: string, hash: string, size: number, modifiedAt: number}|null>}
+         */
+        async getHash(path, token = null) {
+            if (!path || typeof path !== 'string') {
+                throw new Error('A path is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const authToken = token || (storedAuth && storedAuth.token);
+            const currentUserId = (storedAuth && storedAuth.userId);
+
+            const relative = path.charAt(0) === '/' ? path.slice(1) : path;
+            const query = `${this.authQuery(currentUserId, authToken)}&path=${encodeURIComponent(relative)}`;
+
+            return await this.request(`/getHash${query}`, { method: 'GET' });
+        }
+
+        /**
          * Read the caller's interface preferences
          * GET /getSettings/{userid}?userid=..&token=..
          *
@@ -1123,6 +1240,11 @@
                 localStorage.removeItem(STORAGE_KEY_USERID);
                 localStorage.removeItem(STORAGE_KEY_TOKEN);
                 localStorage.removeItem(STORAGE_KEY_USERNAME);
+                // Cached avatars belong to the accounts that granted access to them, so
+                // they leave with the credentials rather than lingering after a sign-out.
+                if (global.OxypeAvatars) {
+                    global.OxypeAvatars.clear();
+                }
             } catch (e) {
                 console.error('[OxypeCore] Failed to clear authentication info', e);
             }
@@ -1131,4 +1253,230 @@
 
     // Export singleton instance
     global.OxypeCore = new OxypeCore();
+
+    // -----------------------------------------------------------------------
+    // Avatar cache
+    //
+    // A picture is the one thing the transcript needs that is not part of a message
+    // payload: it is a URL, fetched separately for every row that carries it. Keeping
+    // the bytes in local storage makes the second paint of a page instant -- the
+    // picture is already here, so nothing is requested at all.
+    //
+    // What local storage cannot do by itself is notice the file changing. It is keyed
+    // by owner, not by URL, and nothing revalidates it: without a check, a replaced
+    // avatar would keep showing the previous picture forever. The hash API exists for
+    // that one question. On every sync the file's hash is asked for first, and the
+    // picture is only fetched again when the hash no longer matches what was stored --
+    // so an unchanged avatar costs one small request and no image at all.
+    //
+    // Entries are capped: local storage is a few megabytes for the whole origin, and an
+    // avatar is allowed to be three. Anything too large to be worth a slot is simply
+    // not stored, and the plain URL is used instead, which the browser's own cache
+    // already handles well.
+    // -----------------------------------------------------------------------
+
+    var AVATAR_KEY_PREFIX = 'oxype_avatar:';
+    var AVATAR_MAX_DATA_URL = 512 * 1024;
+    var AVATAR_MAX_ENTRIES = 24;
+
+    /**
+     * Fetches an image and returns it as a `data:` URL, which is what local storage
+     * can hold. A `blob:` URL would be cheaper but dies with the page.
+     */
+    function fetchAvatarImage(url) {
+        return fetch(url, { credentials: 'omit' })
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status + ' for ' + url);
+                }
+                return response.blob();
+            })
+            .then(function (blob) {
+                return new Promise(function (resolve, reject) {
+                    var reader = new FileReader();
+                    reader.onload = function () {
+                        resolve(String(reader.result || ''));
+                    };
+                    reader.onerror = function () {
+                        reject(new Error('The image could not be read'));
+                    };
+                    reader.readAsDataURL(blob);
+                });
+            });
+    }
+
+    var OxypeAvatars = {
+        /** Storage key of one owner's avatar. Accounts and sessions never collide. */
+        key: function (kind, id) {
+            return AVATAR_KEY_PREFIX + (kind === 'session' ? 'session' : 'user') + ':' + id;
+        },
+
+        /**
+         * The stored entry for an owner, or null.
+         *
+         * This is deliberately synchronous and never falls back to the network: it is
+         * called while a row is being drawn, and the whole point is that the picture
+         * can be put on screen without waiting for anything.
+         */
+        get: function (kind, id) {
+            if (id === null || id === undefined || id === '') {
+                return null;
+            }
+            try {
+                var raw = localStorage.getItem(this.key(kind, id));
+                if (!raw) {
+                    return null;
+                }
+                var entry = JSON.parse(raw);
+                if (!entry || typeof entry.dataUrl !== 'string' || typeof entry.url !== 'string') {
+                    return null;
+                }
+                return entry;
+            } catch (e) {
+                // Unreadable or malformed: treated as absent, and the next sync rewrites it.
+                return null;
+            }
+        },
+
+        /** Writes one entry, evicting older ones if the origin is full. */
+        put: function (kind, id, url, hash, dataUrl) {
+            if (!dataUrl || dataUrl.length > AVATAR_MAX_DATA_URL) {
+                return;
+            }
+            var record = JSON.stringify({
+                url: url,
+                hash: hash || '',
+                dataUrl: dataUrl,
+                savedAt: Date.now()
+            });
+            if (this.write(this.key(kind, id), record)) {
+                return;
+            }
+            // Out of room: make some, then try once more. A cache that cannot be
+            // written is not an error -- the picture still shows, just from the URL.
+            this.prune(AVATAR_MAX_ENTRIES / 2);
+            this.write(this.key(kind, id), record);
+        },
+
+        write: function (key, value) {
+            try {
+                localStorage.setItem(key, value);
+                return true;
+            } catch (e) {
+                return false;
+            }
+        },
+
+        /** Drops an owner's entry. */
+        forget: function (kind, id) {
+            try {
+                localStorage.removeItem(this.key(kind, id));
+            } catch (e) {
+                // Nothing to do: the entry is unreadable anyway.
+            }
+        },
+
+        /** Every avatar key currently stored, oldest first. */
+        entries: function () {
+            var found = [];
+            try {
+                for (var i = 0; i < localStorage.length; i++) {
+                    var key = localStorage.key(i);
+                    if (key && key.indexOf(AVATAR_KEY_PREFIX) === 0) {
+                        var savedAt = 0;
+                        try {
+                            savedAt = JSON.parse(localStorage.getItem(key) || '{}').savedAt || 0;
+                        } catch (e) {
+                            savedAt = 0;
+                        }
+                        found.push({ key: key, savedAt: savedAt });
+                    }
+                }
+            } catch (e) {
+                return [];
+            }
+            found.sort(function (a, b) { return a.savedAt - b.savedAt; });
+            return found;
+        },
+
+        /** Removes the [count] least recently written entries. */
+        prune: function (count) {
+            var all = this.entries();
+            var remove = Math.min(all.length, Math.max(1, Math.ceil(count)));
+            for (var i = 0; i < remove; i++) {
+                try {
+                    localStorage.removeItem(all[i].key);
+                } catch (e) {
+                    // Ignore: a failed removal only means the cache stays full.
+                }
+            }
+        },
+
+        /**
+         * Brings one owner's stored avatar in step with the file on the server.
+         *
+         * Resolves to `{ dataUrl, changed }`, where `dataUrl` is what should be drawn
+         * and `changed` says whether a repaint is needed. A sync with no URL clears the
+         * entry: the avatar was removed, so the initial is the right picture again.
+         *
+         * The hash is requested before the picture on purpose. It is a few bytes against
+         * as much as three megabytes, and it is the only thing that can tell an unchanged
+         * avatar from a replaced one.
+         */
+        sync: async function (kind, id, url) {
+            if (id === null || id === undefined || id === '') {
+                return { dataUrl: '', changed: false };
+            }
+            if (!url) {
+                var had = this.get(kind, id) !== null;
+                this.forget(kind, id);
+                return { dataUrl: '', changed: had };
+            }
+
+            var entry = this.get(kind, id);
+            var reuse = entry && entry.url === url ? entry.dataUrl : '';
+
+            var hash = null;
+            try {
+                var answer = await global.OxypeCore.getHash(url);
+                hash = (answer && typeof answer.hash === 'string') ? answer.hash : null;
+            } catch (e) {
+                // The hash is an optimisation, not a precondition: without it the
+                // picture is still fetched, which is what would have happened anyway.
+                hash = null;
+            }
+
+            // Same URL and same hash: the stored bytes are still the right ones, so
+            // nothing is fetched and nothing needs repainting.
+            if (reuse && hash && entry.hash === hash) {
+                return { dataUrl: reuse, changed: false };
+            }
+
+            var dataUrl = '';
+            try {
+                dataUrl = await fetchAvatarImage(url);
+            } catch (e) {
+                // Undrawable for now; the URL still works as a plain <img src>, so the
+                // caller is given that rather than nothing.
+                return { dataUrl: reuse || '', changed: false };
+            }
+
+            this.put(kind, id, url, hash, dataUrl);
+            return { dataUrl: dataUrl, changed: dataUrl !== reuse };
+        },
+
+        /** Removes every cached avatar, for a sign-out. */
+        clear: function () {
+            var all = this.entries();
+            for (var i = 0; i < all.length; i++) {
+                try {
+                    localStorage.removeItem(all[i].key);
+                } catch (e) {
+                    // Ignore.
+                }
+            }
+        }
+    };
+
+    global.OxypeAvatars = OxypeAvatars;
 })(window);

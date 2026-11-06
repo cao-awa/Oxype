@@ -10,6 +10,7 @@ import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_TOKEN_PREFIX
 import com.github.kusa233.oxype.user.User
 import com.github.kusa233.oxype.user.UserSettings
+import com.github.kusa233.oxype.user.AvatarStorage
 import com.github.kusa233.oxype.user.accentPref
 import com.github.kusa233.oxype.user.cssSource
 import com.github.kusa233.oxype.user.htmlSource
@@ -113,7 +114,10 @@ object UserManager {
             prefLang = stored.langPref,
             prefTheme = stored.themePref,
             prefAccent = stored.accentPref,
-            prefInputFormat = stored.inputFormatPref
+            prefInputFormat = stored.inputFormatPref,
+            // "No avatar" is a legitimate stored state, so an absent name stays absent
+            // rather than being filled in with anything.
+            avatarFile = stored.avatarFile.let { name -> if (name.isNullOrBlank()) null else name }
         )
     }
 
@@ -173,6 +177,33 @@ object UserManager {
             prefAccent = prefAccent?.trim() ?: existing.prefAccent,
             prefInputFormat = prefInputFormat?.trim() ?: existing.prefInputFormat
         )
+        STORAGE[createUserKey(userid)] = updated
+        return updated
+    }
+
+    /**
+     * Replaces this account's avatar with the given file and returns the new record.
+     *
+     * The write to disk happens first: if it fails, the record still names the previous
+     * picture and nothing appears to have changed. The old file is deleted by
+     * [AvatarStorage.store] once the new one is in place.
+     */
+    fun updateAvatar(userid: Long, image: AvatarStorage.Accepted): User? {
+        val existing = getUser(userid) ?: return null
+        val fileName = AvatarStorage.store(AvatarStorage.Owner.USER, userid, image)
+        val updated = existing.copy(avatarFile = fileName)
+        STORAGE[createUserKey(userid)] = updated
+        return updated
+    }
+
+    /**
+     * Removes this account's avatar and returns the record, which then draws as an
+     * initial again. A no-op when there was no picture.
+     */
+    fun removeAvatar(userid: Long): User? {
+        val existing = getUser(userid) ?: return null
+        AvatarStorage.removeAll(AvatarStorage.Owner.USER, userid)
+        val updated = existing.copy(avatarFile = null)
         STORAGE[createUserKey(userid)] = updated
         return updated
     }

@@ -296,6 +296,26 @@
                     <button type="button" id="ssCreateInviteBtn" class="btn-secondary" data-i18n="chat.createInviteBtn">New Invite</button>
                 </div>
             </section>
+            <!-- Conversation avatar. Everyone may see it; only the owner or an admin may
+                 change it, so the two buttons are hidden per role by renderSessionSettings. -->
+            <div class="classic-info-row">
+                <span class="classic-info-label" data-i18n="chat.sessionAvatarTitle">Conversation Avatar</span>
+                <span class="classic-info-value"></span>
+            </div>
+            <div class="avatar-ss-row">
+                <div id="ssAvatarPreview" class="session-settings-avatar" aria-hidden="true"></div>
+                <div class="avatar-ss-actions">
+                    <p class="avatar-hint" id="ssAvatarHint"></p>
+                </div>
+            </div>
+            <input type="file" id="ssAvatarFileInput" class="avatar-file-input"
+                   accept="image/png,image/jpeg,image/webp,image/gif">
+            <div class="dialog-actions avatar-actions">
+                <button type="button" id="ssAvatarRemoveBtn" class="btn-secondary"
+                        data-i18n="chat.avatarRemoveBtn">Remove</button>
+                <button type="button" id="ssAvatarChooseBtn" class="btn-secondary"
+                        data-i18n="chat.sessionAvatarOpenBtn">Set Avatar</button>
+            </div>
             <section id="sessionManageSection" class="classic-manage-section" style="display: none;">
                 <h4 class="dialog-section-title" data-i18n="chat.manageSectionTitle">Management</h4>
                 <form id="ssEditForm" class="dialog-form" novalidate>
@@ -392,6 +412,12 @@
                 <button type="button" id="openStyleSourcesBtn" class="btn-secondary btn-settings-open"
                         data-i18n="chat.styleSourcesOpenBtn">Configure</button>
             </div>
+            <!-- Avatar Row: opens the dedicated Avatar toast -->
+            <div class="settings-row">
+                <div class="settings-row-label"><span data-i18n="chat.avatarTitle">Avatar</span></div>
+                <button type="button" id="openAvatarBtn" class="btn-secondary btn-settings-open"
+                        data-i18n="chat.avatarOpenBtn">Set Avatar</button>
+            </div>
             <!-- Input Settings: the plain-text / Markdown switch for the next message.
                  It used to be the leftmost control of the composer; it is a stored
                  preference, so it sits with the other stored preferences. -->
@@ -450,6 +476,38 @@
             <div class="dialog-actions">
                 <button type="button" id="styleSourcesResetBtn" class="btn-secondary" data-i18n="chat.styleSourcesResetBtn">Reset to Default</button>
                 <button type="button" id="styleSourcesSaveBtn" class="btn-primary" data-i18n="chat.styleSourcesSaveBtn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!--
+        Avatar Toast: its own toast, reached from Settings and closed back to Settings.
+        The picture is cropped to a square by CSS, so an image of any shape is accepted.
+    -->
+    <div class="interactive-dialog classic-dialog" id="avatarDialog" style="display: none;" role="dialog" aria-modal="true">
+        <header class="dialog-header">
+            <h3 class="dialog-title" id="dialogAvatarTitle" data-i18n="chat.avatarTitle">Avatar</h3>
+            <button type="button" class="dialog-close-btn" id="closeAvatarBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body">
+            <div class="avatar-ss-row">
+                <div id="avatarPreview" class="avatar-preview" aria-hidden="true"></div>
+                <div class="avatar-ss-actions">
+                    <p class="avatar-hint" id="avatarHint"></p>
+                </div>
+            </div>
+            <input type="file" id="avatarFileInput" class="avatar-file-input"
+                   accept="image/png,image/jpeg,image/webp,image/gif">
+            <div class="dialog-actions avatar-actions">
+                <button type="button" id="avatarRemoveBtn" class="btn-secondary"
+                        data-i18n="chat.avatarRemoveBtn">Remove</button>
+                <button type="button" id="avatarChooseBtn" class="btn-primary"
+                        data-i18n="chat.avatarChooseBtn">Choose Image</button>
             </div>
         </div>
     </div>
