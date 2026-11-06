@@ -24,3 +24,4 @@ bin/
 /configs/
 /logs/
 /databases/
+_*

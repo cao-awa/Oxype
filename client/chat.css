@@ -1025,6 +1025,7 @@
 .session-avatar.has-image,
 .message-avatar.has-image,
 .user-avatar-sm.has-image,
+.member-avatar.has-image,
 .session-settings-avatar.has-image {
     background-color: transparent;
     overflow: hidden;
@@ -1034,6 +1035,7 @@
 .session-avatar.has-image img,
 .message-avatar.has-image img,
 .user-avatar-sm.has-image img,
+.member-avatar.has-image img,
 .session-settings-avatar.has-image img {
     width: 100%;
     height: 100%;

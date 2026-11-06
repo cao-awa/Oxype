@@ -2454,10 +2454,13 @@
             `;
 
             // Seeded from the conversation record when it already carries a picture, and
-            // otherwise left to the bulk sweep that fills in the rest.
+            // otherwise left to the bulk sweep that fills in the rest. The bytes are
+            // stored as well as drawn, so the next load paints from localStorage instead
+            // of fetching the image again.
             if (isObject && typeof session.avatarUrl === 'string') {
                 avatarUrlCache.set(avatarCacheKey('session', sessionId), session.avatarUrl);
                 paintAvatarElement(btn.querySelector('.session-avatar'), 'session', sessionId, avatarChar);
+                syncAvatar('session', sessionId, session.avatarUrl);
             } else {
                 requestSessionAvatar(sessionId);
             }
@@ -2487,7 +2490,17 @@
                         const nameEl = btn.querySelector('.session-name');
                         const avatarEl = btn.querySelector('.session-avatar');
                         if (nameEl) nameEl.textContent = name;
-                        if (avatarEl) avatarEl.textContent = name.trim().charAt(0).toUpperCase() || '#';
+                        if (avatarEl) {
+                            // Painted, not overwritten: this refresh lands after the
+                            // picture was drawn, and assigning textContent would delete
+                            // the <img> and drop the row back to a letter.
+                            const initial = name.trim().charAt(0).toUpperCase() || '#';
+                            avatarEl.dataset.avatarInitial = initial;
+                            if (typeof obj.avatarUrl === 'string') {
+                                avatarUrlCache.set(avatarCacheKey('session', id), obj.avatarUrl);
+                            }
+                            paintAvatarElement(avatarEl, 'session', id, initial);
+                        }
                     }
                     if (String(activeSessionId) === id) {
                         if (activeSessionInfo) {
@@ -3131,7 +3144,18 @@
             }
             const avatar = row.querySelector('.message-avatar');
             if (avatar) {
-                avatar.textContent = senderName.trim().charAt(0).toUpperCase() || '?';
+                // Repainted rather than overwritten: this runs after history is inserted
+                // and after a sender's name resolves, and assigning textContent here would
+                // replace the <img> a picture had already drawn. Re-deriving the letter
+                // too keeps the fallback correct when a sender was renamed.
+                const initial = senderName.trim().charAt(0).toUpperCase() || '?';
+                avatar.dataset.avatarInitial = initial;
+                const owner = row.dataset.senderId;
+                if (owner !== undefined && cachedAvatarUrl('user', owner) !== undefined) {
+                    paintAvatarElement(avatar, 'user', owner, initial);
+                } else {
+                    avatar.textContent = initial;
+                }
                 avatar.classList.toggle('is-hidden', continuesNext);
             }
         });
@@ -4123,7 +4147,13 @@
                 const avatarEl = sessionItem.querySelector('.session-avatar');
                 const sessionName = cached.sessionName || `Session #${activeSessionId}`;
                 if (nameEl) nameEl.textContent = sessionName;
-                if (avatarEl) avatarEl.textContent = sessionName.trim().charAt(0).toUpperCase() || '#';
+                if (avatarEl) {
+                    // A rename changes the fallback letter but must not discard the
+                    // picture, so the avatar is repainted through the shared rule.
+                    const initial = sessionName.trim().charAt(0).toUpperCase() || '#';
+                    avatarEl.dataset.avatarInitial = initial;
+                    paintAvatarElement(avatarEl, 'session', sessionKey, initial);
+                }
             }
             renderSessionSettings();
             updateActiveSessionHeader();

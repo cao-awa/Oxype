@@ -2427,7 +2427,13 @@
                 const avatarEl = sessionItem.querySelector('.session-avatar');
                 const sessionName = cached.sessionName || `Session #${activeSessionId}`;
                 if (nameEl) nameEl.textContent = sessionName;
-                if (avatarEl) avatarEl.textContent = sessionName.trim().charAt(0).toUpperCase() || '#';
+                if (avatarEl) {
+                    // A rename changes the fallback letter but must not discard the
+                    // picture, so the avatar is repainted through the shared rule.
+                    const initial = sessionName.trim().charAt(0).toUpperCase() || '#';
+                    avatarEl.dataset.avatarInitial = initial;
+                    paintAvatarElement(avatarEl, 'session', sessionKey, initial);
+                }
             }
             renderSessionSettings();
             updateActiveSessionHeader();
@@ -3339,10 +3345,13 @@
             `;
 
             // Seeded from the conversation record when it already carries a picture, and
-            // otherwise left to the bulk sweep that follows this loop.
+            // otherwise left to the bulk sweep that follows this loop. The bytes are
+            // stored too, not just drawn: a row that only ever painted from the URL would
+            // refetch the image on every load, which is what the hash exists to avoid.
             if (typeof session.avatarUrl === 'string') {
                 avatarUrlCache.set(avatarCacheKey('session', sessionId), session.avatarUrl);
                 paintAvatarElement(sessionBtn.querySelector('.session-avatar'), 'session', sessionId, avatarChar);
+                syncAvatar('session', sessionId, session.avatarUrl);
             } else {
                 requestSessionAvatar(sessionId);
             }
@@ -3401,7 +3410,17 @@
                                 const nameEl = sessionBtn.querySelector('.session-name');
                                 const avatarEl = sessionBtn.querySelector('.session-avatar');
                                 if (nameEl) nameEl.textContent = sName;
-                                if (avatarEl) avatarEl.textContent = sName.trim().charAt(0).toUpperCase() || '#';
+                                if (avatarEl) {
+                                    // Painted, not overwritten: this refresh arrives after
+                                    // the picture was drawn, and assigning textContent
+                                    // would delete the <img> and fall back to a letter.
+                                    const initial = sName.trim().charAt(0).toUpperCase() || '#';
+                                    avatarEl.dataset.avatarInitial = initial;
+                                    if (typeof sessionObj.avatarUrl === 'string') {
+                                        avatarUrlCache.set(avatarCacheKey('session', sId), sessionObj.avatarUrl);
+                                    }
+                                    paintAvatarElement(avatarEl, 'session', sId, initial);
+                                }
                             }
 
                             // If this session is currently active in main view, refresh the header
@@ -3461,7 +3480,18 @@
             }
             const avatar = row.querySelector('.message-avatar');
             if (avatar) {
-                avatar.textContent = senderName.trim().charAt(0).toUpperCase() || '?';
+                // Repainted rather than overwritten: this runs after history is inserted
+                // and after a sender's name resolves, and assigning textContent here would
+                // replace the <img> a picture had already drawn. Re-deriving the letter
+                // too keeps the fallback correct when a sender was renamed.
+                const initial = senderName.trim().charAt(0).toUpperCase() || '?';
+                avatar.dataset.avatarInitial = initial;
+                const owner = row.dataset.senderId;
+                if (owner !== undefined && cachedAvatarUrl('user', owner) !== undefined) {
+                    paintAvatarElement(avatar, 'user', owner, initial);
+                } else {
+                    avatar.textContent = initial;
+                }
                 // Hidden on every row but the last of the run. The stylesheet keeps the
                 // element occupying its column while hidden, so the bubbles stay aligned.
                 avatar.classList.toggle('is-hidden', continuesNext);
