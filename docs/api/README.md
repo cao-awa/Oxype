@@ -171,6 +171,15 @@ Request body:
 
 A custom source must be an empty string, an absolute URL beginning with ``https://``, or a relative path on this same origin. It must not exceed ``maxLength`` characters, must not be a protocol-relative URL beginning with ``//``, and must not contain ``..``.
 
+**How a source is actually loaded.** The browser decides how to apply a source, and it does so differently for the two accepted forms:
+
+1. **A path on this same origin** is loaded with a normal ``<link rel="stylesheet">`` or ``<script src>`` element. This application serves those files with the correct ``Content-Type``, so the element route works and is preferred.
+2. **An ``https://`` URL on another origin** is fetched as text and then applied inline — as a ``<style>`` element for a stylesheet, and as an inline ``<script>`` for a script. This is deliberate: the element route requires the *other* server to send a usable ``Content-Type``, and many file hosts do not. GitHub's ``raw.githubusercontent.com``, for example, serves every file as ``text/plain`` with ``X-Content-Type-Options: nosniff``, so a browser refuses to apply it as a stylesheet or execute it as a script even though the bytes are correct. Fetching the text and applying it inline sidesteps that check, so raw GitHub URLs work as style sources.
+
+Because a cross-origin script is applied inline, it runs in this page's own global scope, exactly as the bundled script would. A cross-origin stylesheet therefore cannot use relative ``url(...)`` references — they would resolve against this origin, not the host the file came from. Use absolute URLs inside third-party stylesheets.
+
+If any of the three sources fails to load, all three fall back to the bundled defaults, the failed override is removed from the document (including an inline ``<style>``), and the user is shown a notice naming the URL that failed.
+
 Request body example:
 ```json
 {

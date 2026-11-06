@@ -364,7 +364,7 @@
         requireStyleSheet(url);
         return new Promise(function (resolve, reject) {
             function attempt() {
-                loadStyleSheet(url).then(resolve, function (error) {
+                loadStyleSheetOf(url).then(resolve, function (error) {
                     var used = assetAttempts[url] || 0;
                     if (used < MAX_ASSET_RETRIES) {
                         assetAttempts[url] = used + 1;
@@ -390,6 +390,21 @@
         requiredStyleSheets = requiredStyleSheets.filter(function (url) {
             return url === BASE_STYLESHEET || url === DEFAULT_CSS;
         });
+        // A cross-origin override is applied as an inline <style>, which no
+        // subsequent load replaces: leaving it in place would keep the failed
+        // skin's rules winning over the bundled ones that were just re-applied.
+        var overrides = document.querySelectorAll('style[data-oxype-source]');
+        for (var i = 0; i < overrides.length; i++) {
+            var style = overrides[i];
+            var source = style.getAttribute('data-oxype-source');
+            if (source === BASE_STYLESHEET || source === DEFAULT_CSS) {
+                continue;
+            }
+            if (style.parentNode) {
+                style.parentNode.removeChild(style);
+            }
+            delete loadedStyleSheets[source];
+        }
     }
 
     /** Markup of the bundled page, captured before any custom HTML replaces it. */
@@ -441,6 +456,76 @@
 
             document.head.appendChild(link);
         });
+    }
+
+    /**
+     * Reports whether [url] is served from another origin.
+     *
+     * Cross-origin sources are fetched as text and applied inline, because the
+     * browser's own `<link>` and `<script src>` routes depend on the other server
+     * sending a usable Content-Type. GitHub's raw file host, for instance, sends
+     * every file as `text/plain` with `X-Content-Type-Options: nosniff`, so the
+     * browser refuses to apply it as a stylesheet or to execute it as a script --
+     * even though the bytes themselves are perfectly good. Those are exactly the
+     * URLs a user is most likely to paste, so they have to work.
+     *
+     * Same-origin sources keep the element route: they are served by this
+     * application with the right type, and a `<link>` there gives the browser a
+     * real URL to resolve the sheet's own relative references against.
+     */
+    function isCrossOrigin(url) {
+        try {
+            return new URL(url, global.location.href).origin !== global.location.origin;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /** Fetches a stylesheet's text and applies it as an inline <style>. */
+    function loadStyleSheetInlined(url) {
+        if (loadedStyleSheets[url]) {
+            return Promise.resolve(loadedStyleSheets[url]);
+        }
+        return fetchText(url).then(function (text) {
+            var style = document.createElement('style');
+            // Marked so the sheet can be identified later, and so a rollback can
+            // drop exactly the overrides rather than every style element.
+            style.setAttribute('data-oxype-source', url);
+            style.textContent = text;
+            document.head.appendChild(style);
+            loadedStyleSheets[url] = style;
+            return style;
+        });
+    }
+
+    /** Fetches a script's text and evaluates it in the page's own global scope. */
+    function loadScriptInlined(url) {
+        if (loadedScripts[url]) {
+            return Promise.resolve(loadedScripts[url]);
+        }
+        return fetchText(url).then(function (text) {
+            // A <script> element is used for the same reason the element route
+            // would: it runs in the page's global scope, so the file's top-level
+            // declarations land where chat.js and the other modules expect them.
+            // `text` instead of `src` is the only difference, and it is what makes
+            // the browser skip the Content-Type check that a nosniff host fails.
+            var script = document.createElement('script');
+            script.setAttribute('data-oxype-source', url);
+            script.text = text;
+            document.head.appendChild(script);
+            loadedScripts[url] = script;
+            return script;
+        });
+    }
+
+    /** Loads a stylesheet, choosing the route that can actually work for [url]. */
+    function loadStyleSheetOf(url) {
+        return isCrossOrigin(url) ? loadStyleSheetInlined(url) : loadStyleSheet(url);
+    }
+
+    /** Loads a script, choosing the route that can actually work for [url]. */
+    function loadScriptOf(url) {
+        return isCrossOrigin(url) ? loadScriptInlined(url) : loadScript(url);
     }
 
     /** Loads a script, resolving once it has executed. */
@@ -818,7 +903,7 @@
             .then(loadBaseScripts)
             .then(function () {
                 var jsUrl = sources.js || DEFAULT_JS;
-                return loadScript(jsUrl).catch(function () {
+                return loadScriptOf(jsUrl).catch(function () {
                     if (sources.js) {
                         return fallbackToDefaults(sources.js).then(function () {
                             throw { handled: true };
