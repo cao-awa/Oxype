@@ -176,13 +176,30 @@
                         <div class="user-id-badge" id="userIdBadge">ID: --</div>
                     </div>
                 </div>
-                <!-- Settings Button (Replaces Door Logout Icon) -->
-                <button id="settingsBtn" class="settings-icon-btn" type="button" data-i18n-title="chat.settingsBtn" title="Settings" aria-label="Settings">
-                    <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="3"></circle>
-                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                    </svg>
-                </button>
+                <!--
+                    The two account-level buttons, grouped at the right edge of the
+                    footer. Friends sits before Settings rather than being scattered
+                    across the row: the footer spaces its children apart, so two loose
+                    buttons would be pushed to opposite ends of it.
+                -->
+                <div class="sidebar-footer-actions">
+                    <button id="openFriendsBtn" class="settings-icon-btn" type="button"
+                            data-i18n-title="chat.friendsBtn" title="Friends" aria-label="Friends">
+                        <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                    </button>
+                    <!-- Settings Button (Replaces Door Logout Icon) -->
+                    <button id="settingsBtn" class="settings-icon-btn" type="button" data-i18n-title="chat.settingsBtn" title="Settings" aria-label="Settings">
+                        <svg class="icon-svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                        </svg>
+                    </button>
+                </div>
             </footer>
         </aside>
 
@@ -301,7 +318,13 @@
             <section class="dialog-section">
                 <h4 class="dialog-section-title" data-i18n="chat.sessionInfoTitle">Conversation Info</h4>
                 <div class="info-grid">
-                    <div class="info-row">
+                    <!--
+                        The name and owner rows are tagged because a friend
+                        conversation has neither of its own: its name is the other
+                        person's, and there is no owner to speak of, so the settings
+                        screen hides both rather than showing a placeholder.
+                    -->
+                    <div class="info-row" id="ssNameRow">
                         <span class="info-label" data-i18n="chat.sessionNameField">Name</span>
                         <span class="info-value" id="ssSessionName">-</span>
                     </div>
@@ -309,7 +332,7 @@
                         <span class="info-label" data-i18n="chat.sessionDescField">Description</span>
                         <span class="info-value" id="ssSessionDesc">-</span>
                     </div>
-                    <div class="info-row">
+                    <div class="info-row" id="ssOwnerRow">
                         <span class="info-label" data-i18n="chat.sessionOwnerField">Owner</span>
                         <span class="info-value" id="ssSessionOwner">-</span>
                     </div>
@@ -322,7 +345,7 @@
 
             <!-- Conversation avatar (owner/admin): lives next to the conversation's
                  identity because that is what it changes. -->
-            <section class="dialog-section">
+            <section class="dialog-section" id="ssAvatarSection">
                 <h4 class="dialog-section-title" data-i18n="chat.sessionAvatarTitle">Conversation Avatar</h4>
                 <div class="avatar-ss-row">
                     <div id="ssAvatarPreview" class="session-settings-avatar" aria-hidden="true"></div>
@@ -351,7 +374,7 @@
             </section>
 
             <!-- Entry points to the dedicated members / management toasts -->
-            <section class="dialog-section">
+            <section class="dialog-section" id="ssNavSection">
                 <button type="button" id="openMembersBtn" class="btn-secondary settings-nav-btn">
                     <span data-i18n="chat.membersTitle">Members</span>
                 </button>
@@ -360,10 +383,14 @@
                 </button>
             </section>
 
-            <!-- Leave conversation -->
+            <!--
+                Leave conversation. On a friend conversation this row deletes the
+                friend instead, so both labels carry an id: they are rewritten when
+                the toast opens rather than left saying "Leave Conversation".
+            -->
             <div class="settings-row settings-logout-row">
                 <div class="settings-row-label">
-                    <span data-i18n="chat.leaveSessionBtn">Leave Conversation</span>
+                    <span id="ssLeaveLabel" data-i18n="chat.leaveSessionBtn">Leave Conversation</span>
                 </div>
                 <button type="button" id="ssLeaveBtn" class="btn-danger btn-logout-action">
                     <svg class="icon-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -371,7 +398,7 @@
                         <polyline points="16 17 21 12 16 7"></polyline>
                         <line x1="21" y1="12" x2="9" y2="12"></line>
                     </svg>
-                    <span data-i18n="chat.leaveSessionBtn">Leave Conversation</span>
+                    <span id="ssLeaveBtnLabel" data-i18n="chat.leaveSessionBtn">Leave Conversation</span>
                 </button>
             </div>
         </div>
@@ -594,6 +621,89 @@
             <div class="dialog-actions">
                 <button type="button" id="styleSourcesResetBtn" class="btn-secondary" data-i18n="chat.styleSourcesResetBtn">Reset to Default</button>
                 <button type="button" id="styleSourcesSaveBtn" class="btn-primary" data-i18n="chat.styleSourcesSaveBtn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!--
+        Friends Toast: the account's friendships, opened from the sidebar footer.
+
+        The search field takes a user id and nothing else — there is no name lookup
+        on the backend, and ids are numeric — so the input filters to digits as it
+        is typed. The request lists live under the field in the same toast because
+        accepting a request and searching for a stranger are the same task, and
+        splitting them would hide pending requests behind another click.
+    -->
+    <div id="friendsDialog" class="interactive-dialog" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="dialogFriendsTitle">
+        <header class="dialog-header">
+            <h3 id="dialogFriendsTitle" class="dialog-title" data-i18n="chat.friendsTitle">Friends</h3>
+            <button type="button" class="dialog-close-btn" id="closeFriendsBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body">
+            <div class="form-group friend-search-group">
+                <label for="friendSearchInput" class="form-label" data-i18n="chat.friendSearchLabel">User ID</label>
+                <div class="friend-search-row">
+                    <input type="text" id="friendSearchInput" class="form-input" inputmode="numeric"
+                           pattern="[0-9]*" maxlength="19" autocomplete="off" spellcheck="false"
+                           data-i18n-placeholder="chat.friendSearchPlaceholder" placeholder="Enter a user ID">
+                    <button type="button" id="friendSearchBtn" class="btn-primary friend-search-btn"
+                            data-i18n="chat.friendSearchBtn">Search</button>
+                </div>
+                <p class="friend-search-hint" id="friendSearchHint" data-i18n="chat.friendSearchHint">Search accepts digits only.</p>
+            </div>
+
+            <div class="dialog-section friend-list-section">
+                <div class="dialog-section-title">
+                    <span data-i18n="chat.friendRequestsTitle">Friend Requests</span>
+                </div>
+                <ul class="friend-request-list" id="friendIncomingList"></ul>
+                <p class="friend-empty" id="friendIncomingEmpty" data-i18n="chat.friendRequestsEmpty">No incoming requests.</p>
+            </div>
+
+            <div class="dialog-section friend-list-section">
+                <div class="dialog-section-title">
+                    <span data-i18n="chat.friendOutgoingTitle">Sent Requests</span>
+                </div>
+                <ul class="friend-request-list" id="friendOutgoingList"></ul>
+                <p class="friend-empty" id="friendOutgoingEmpty" data-i18n="chat.friendOutgoingEmpty">No requests sent.</p>
+            </div>
+        </div>
+    </div>
+
+    <!--
+        Friend Result Toast: the account found by the id just searched, layered on
+        top of the friends toast.
+
+        The picture is at the top because it is what identifies the account: two
+        people can share a display name, and the id alone says nothing at a glance.
+        The add button is the only action, and it becomes the accept button when the
+        other side already asked, since that is the same request met from the far
+        end.
+    -->
+    <div id="friendUserDialog" class="interactive-dialog" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="dialogFriendUserTitle">
+        <header class="dialog-header">
+            <h3 id="dialogFriendUserTitle" class="dialog-title" data-i18n="chat.friendProfileTitle">User</h3>
+            <button type="button" class="dialog-close-btn" id="closeFriendUserBtn" aria-label="Close">
+                <svg class="icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </header>
+        <div class="dialog-body settings-dialog-body friend-profile-body">
+            <div class="friend-profile-avatar" id="friendUserAvatar" aria-hidden="true">U</div>
+            <div class="friend-profile-name" id="friendUserName">User</div>
+            <div class="friend-profile-id" id="friendUserId">ID: --</div>
+            <p class="friend-profile-status" id="friendUserStatus"></p>
+
+            <div class="dialog-actions friend-profile-actions">
+                <button type="button" id="friendUserAddBtn" class="btn-primary"
+                        data-i18n="chat.friendAddBtn">Add Friend</button>
             </div>
         </div>
     </div>

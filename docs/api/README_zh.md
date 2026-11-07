@@ -10,7 +10,7 @@
 约定:
 1. 鉴权字段为 ``userid`` 与 ``token``，``userId`` 可作为 ``userid`` 的别名。
 2. POST接口从JSON请求体读取鉴权字段；GET接口从查询字符串读取，读取不到时回退到请求头 ``userid``/``X-User-Id`` 与 ``token``/``X-Token``。
-3. 通用错误:请求体不是合法JSON或缺少必填字段返回400，token无效返回401，无权访问返回403，目标不存在返回404。
+3. 通用错误:请求体不是合法JSON、缺少必填字段、或取值指向调用者无权执行的操作时返回400；token无效返回401；无权访问返回403；目标不存在返回404；对好友会话执行仅限群聊的操作返回409。
 
 ### isAlive
 
@@ -578,12 +578,18 @@
 返回值:
 1. ``isEmpty``:boolean（是否没有任何已加入的会话）
 2. ``sessions``:array<long>（已加入的会话ID列表）
+3. ``revision``:long（该用户会话列表的变更计数，每次变化都会递增）
+
+``revision`` 的存在是为了让客户端能发现它漏收了一次 ``sessionsChanged`` WebSocket 推送。任何成员变更都会递增该计数，同一个值也会出现在 WebSocket 的 ``ready`` 与 ``pong`` 帧中，因此客户端只要把列表读取时记下的值与之比较，就能只在两者不一致时重新加载。没送达的推送没有别的办法发现：连接仍然开着，只是什么都不说。
+
+客户端应当比较计数，而不能认为“相等即无变化”：该计数在服务端重启后从 0 重新开始，这只会让客户端多加载一次，绝不会让它停在过期状态。该值是在列表组装*之前*读取的，所以两次读取之间发生的变更会以*较旧*的计数被报出——客户端因此仍然落后，并在下一次比较时重新加载。若改为之后读取，就会把*较新*的计数和较旧的列表配在一起，使客户端永久停留在过期状态。
 
 返回值示例:
 ```json
 {
   "isEmpty": false,
-  "sessions": [1, 2, 3]
+  "sessions": [1, 2, 3],
+  "revision": 12
 }
 ```
 
@@ -741,6 +747,13 @@
 
 请求体:
 1. ``sessions``:array<long>（要查询的会话ID列表，不存在的会话会被跳过）
+2. ``userid``:long（可选，用于让返回值相对调用者）
+3. ``token``:string（登录用户的token，与 ``userid`` 一起提供）
+
+该接口按是否带凭据返回两种形状之一。多数调用者不带凭据——会话列表在用户登录之前就要绘制——因此凭据是尽力解析的，而不是强制要求。
+
+1. **不带凭据**时，直接返回存储记录的编码内容，并附加 ``avatarUrl``。这是该接口一直以来的形状。
+2. **带凭据**时，每条记录按调用者的视角返回，与 `getSession` 完全一致。该视角会用对方的名字和头像来命名好友会话，并带上 ``isFriend``，让客户端能区分“好友单聊”和“恰好只有两个成员的群聊”。
 
 请求体示例:
 ```json
@@ -749,29 +762,48 @@
 }
 ```
 
-返回值:
-1. 会话对象数组，每个元素包含:
-2. ``sessionId``:long
-3. ``sessionName``:string
+请求体示例（带凭据）:
+```json
+{
+  "sessions": [1, 2, 3],
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+两种形状共有的字段:
+1. ``sessionId``:long
+2. ``sessionName``:string
+3. ``description``:string
 4. ``owner``:long
 5. ``admins``:array<long>
 6. ``members``:array<long>
-7. ``description``:string
-8. ``avatarFile``:string（已保存的文件名，会话没有头像时为 ``null``）
-9. ``avatarUrl``:string（会话头像的相对URL，没有头像时为空字符串）
+7. ``avatarFile``:string（已保存的文件名，会话没有头像时为 ``null``；仅不带凭据的形状包含）
+8. ``avatarUrl``:string（会话头像的相对URL，没有头像时为空字符串）
 
-返回值示例:
+仅带凭据的形状另有:
+9. ``isOwner``:boolean
+10. ``isAdmin``:boolean
+11. ``isFriend``:boolean（是否为好友单聊会话）
+12. ``peerUserId``:long（对方用户，仅好友会话包含）
+13. ``peerUsername``:string（与 ``peerUserId`` 一同出现）
+
+``peerUserId`` 与 ``peerUsername`` 是直接省略而非置为 ``null``，因此客户端应判断键是否存在。
+
+返回值示例（带凭据）:
 ```json
 [
   {
     "sessionId": 1,
     "sessionName": "Kotlin",
-    "owner": 1,
-    "admins": [],
-    "members": [1, 2],
     "description": "关于Kotlin的讨论",
-    "avatarFile": null,
-    "avatarUrl": ""
+    "owner": 1,
+    "avatarUrl": "",
+    "admins": [2],
+    "members": [1, 2, 3],
+    "isOwner": true,
+    "isAdmin": true,
+    "isFriend": false
   }
 ]
 ```
@@ -796,14 +828,19 @@
 
 返回值:
 1. ``sessionId``:long
-2. ``sessionName``:string
+2. ``sessionName``:string（好友会话中为对方的用户名）
 3. ``description``:string
 4. ``owner``:long
-5. ``avatarUrl``:string（会话头像的相对URL，没有头像时为空字符串）
+5. ``avatarUrl``:string（会话头像的相对URL；好友会话中为对方头像的URL，没有头像时为空字符串）
 6. ``admins``:array<long>
 7. ``members``:array<long>
 8. ``isOwner``:boolean
 9. ``isAdmin``:boolean
+10. ``isFriend``:boolean（是否为好友单聊会话）
+11. ``peerUserId``:long（对方用户，仅好友会话包含）
+12. ``peerUsername``:string（与 ``peerUserId`` 一同出现）
+
+好友会话是一个仅在好友关系存续期间存在的普通会话。它的成员就是好友关系本身，因此没有所有者也没有管理员，仅限群聊的接口（`updateSession`、`removeSessionMember` 以及邀请相关接口）会以 409 拒绝它。它的名字与头像按*查看者*一侧解析，因此同一条存储记录对双方都能正确显示。``peerUserId`` 与 ``peerUsername`` 是直接省略而非置为 ``null``。
 
 返回值示例:
 ```json
@@ -816,7 +853,26 @@
   "admins": [2],
   "members": [1, 2, 3],
   "isOwner": true,
-  "isAdmin": true
+  "isAdmin": true,
+  "isFriend": false
+}
+```
+
+返回值示例（好友会话）:
+```json
+{
+  "sessionId": 7,
+  "sessionName": "someone",
+  "description": "",
+  "owner": 0,
+  "avatarUrl": "/avatar/u2-8c1d0f3a.png",
+  "admins": [],
+  "members": [1, 2],
+  "isOwner": false,
+  "isAdmin": false,
+  "isFriend": true,
+  "peerUserId": 2,
+  "peerUsername": "someone"
 }
 ```
 
@@ -1501,6 +1557,8 @@
 
 所有者离开时，所有权会移交给剩余成员中的第一个可用成员。
 
+**离开好友会话就是删除好友。** 好友会话只是好友关系自己的通道，因此“离开会话但仍然是好友”会留下一段无处可谈的好友关系。所以在好友会话上，该接口会双向解除好友关系、删除该会话及其消息历史，并返回 ``removedFriend``。对方会收到 WebSocket 推送，使其闲置的客户端重新加载列表。
+
 请求体示例:
 ```json
 {
@@ -1512,12 +1570,22 @@
 返回值:
 1. ``left``:boolean
 2. ``sessionId``:long
+3. ``removedFriend``:long（被解除好友关系的对方，仅在离开好友会话时出现）
 
 返回值示例:
 ```json
 {
   "left": true,
   "sessionId": 1
+}
+```
+
+返回值示例（离开好友会话）:
+```json
+{
+  "left": true,
+  "sessionId": 7,
+  "removedFriend": 2
 }
 ```
 
@@ -1615,6 +1683,295 @@
 }
 ```
 
+### findUser
+
+请求类型:GET
+
+接口:``/findUser/{userid}``
+
+请求体:
+1. ``userid``:long（要查找的用户ID，精确匹配）
+2. ``userid``:long（已登录的用户）
+3. ``token``:string（登录用户的token）
+
+好友搜索框只接受数字，因此除ID本身之外没有别的可搜索依据。该接口刻意做成精确ID查找，而不是对所有账户做子串搜索——后者会让人只需输入 ``1`` 就枚举出全部账户。
+
+返回值里带名字和头像，因为这个结果在任何好友关系建立之前就要画成一张卡片；这也是该接口不走 `getUser` 的原因：`getUser` 只对已经与之共享会话的人展示他人资料。
+
+调用者自己的ID和不存在的ID都返回 ``{"found": false}`` 而不是报错，这样客户端可以渲染“查无此人”，而无需区分 404 与“这就是你自己”。
+
+请求体示例:
+```json
+{
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+返回值:
+1. ``found``:boolean（调用者自己的ID与不存在的ID为 false，此时不含其他字段）
+2. ``userid``:long
+3. ``username``:string
+4. ``avatarUrl``:string（该用户头像的相对URL，没有头像时为空字符串）
+5. ``isFriend``:boolean（两人是否已是好友）
+6. ``requestPending``:boolean（调用者是否与该账户有一个待处理的好友请求）
+7. ``requestIncoming``:boolean（该账户是否与调用者有一个待处理的好友请求）
+
+返回值示例:
+```json
+{
+  "found": true,
+  "userid": 2,
+  "username": "someone",
+  "avatarUrl": "",
+  "isFriend": false,
+  "requestPending": false,
+  "requestIncoming": true
+}
+```
+
+返回值示例（查无此人）:
+```json
+{
+  "found": false
+}
+```
+
+### getFriends
+
+请求类型:GET
+
+接口:``/getFriends/{userid}``
+
+请求体:
+1. ``userid``:long（已登录的用户，列出其好友）
+2. ``token``:string（登录用户的token）
+
+请求体示例:
+```json
+{
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+返回值:
+1. ``friends``:array<object>
+
+``friends`` 的每个元素:
+1. ``userid``:long
+2. ``username``:string（账户没有用户名时回退为 ``User #<userid>``）
+3. ``avatarUrl``:string（该用户头像的相对URL，没有头像时为空字符串）
+
+返回值示例:
+```json
+{
+  "friends": [
+    {
+      "userid": 2,
+      "username": "someone",
+      "avatarUrl": "/avatar/u2-8c1d0f3a.png"
+    }
+  ]
+}
+```
+
+### getFriendRequests
+
+请求类型:GET
+
+接口:``/getFriendRequests/{userid}``
+
+请求体:
+1. ``userid``:long（已登录的用户）
+2. ``token``:string（登录用户的token）
+
+请求体示例:
+```json
+{
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+两个方向由同一次调用返回，因为它们画在同一个面板里；拆成两次调用会让两半在某个请求正被接受时对“什么是待处理的”产生分歧。
+
+返回值:
+1. ``incoming``:array<object>（其他账户发给调用者、等待调用者处理的请求）
+2. ``outgoing``:array<object>（调用者发出、尚无人应答的请求）
+
+两个数组的元素都是与 `getFriends` 相同的用户卡片，含三个字段：``userid``:long、``username``:string、``avatarUrl``:string。
+
+返回值示例:
+```json
+{
+  "incoming": [
+    {
+      "userid": 3,
+      "username": "another",
+      "avatarUrl": ""
+    }
+  ],
+  "outgoing": []
+}
+```
+
+### sendFriendRequest
+
+请求类型:POST
+
+接口:``/sendFriendRequest/{userid}``
+
+请求体:
+1. ``targetUserid``:long（``targetUserId`` 可作为别名）
+2. ``userid``:long（已登录的用户）
+3. ``token``:string（登录用户的token）
+
+在关键的这一个方向上是幂等的：如果对方此前已经向你发过请求，这次调用会*直接完成*好友关系，而不是留下两个互指的请求。这既是用户的本意，也让接受按钮不需要在两边各点一次——所以返回值区分 ``pending`` 与 ``accepted``。
+
+成为好友会立即创建单聊会话，因此当请求当场被接受时，返回值里会带上它的 ``sessionId``。无论哪种情形，对方都会收到 WebSocket 推送，因为对方在那一刻没有做任何动作。
+
+调用者自己的ID返回400；不存在的ID返回404；已经是好友返回400；待处理的收到请求过多同样返回400。
+
+请求体示例:
+```json
+{
+  "targetUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+返回值:
+1. ``status``:string（``pending`` 表示请求正在等对方处理，``accepted`` 表示本次调用完成了一条已有的请求）
+2. ``targetUserid``:long
+3. ``sessionId``:long（新建的会话，仅当 ``status`` 为 ``accepted`` 时出现）
+
+返回值示例（已发出请求）:
+```json
+{
+  "status": "pending",
+  "targetUserid": 2
+}
+```
+
+返回值示例（接受了对方的请求）:
+```json
+{
+  "status": "accepted",
+  "targetUserid": 2,
+  "sessionId": 7
+}
+```
+
+### acceptFriendRequest
+
+请求类型:POST
+
+接口:``/acceptFriendRequest/{userid}``
+
+请求体:
+1. ``requesterUserid``:long（发出请求的账户，``requesterUserId`` 可作为别名）
+2. ``userid``:long（已登录的用户）
+3. ``token``:string（登录用户的token）
+
+建立好友关系以及两人共享的会话。会话在此处创建而不是等到首次打开时才惰性创建，这样“接受”在双方侧边栏里会立刻有一个可见的效果，并且会话ID在好友关系存续期间保持稳定。
+
+没有这样的待处理请求、或两人已是好友，返回400。
+
+请求体示例:
+```json
+{
+  "requesterUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+返回值:
+1. ``accepted``:boolean
+2. ``sessionId``:long（两人现在共享的会话）
+
+返回值示例:
+```json
+{
+  "accepted": true,
+  "sessionId": 7
+}
+```
+
+### declineFriendRequest
+
+请求类型:POST
+
+接口:``/declineFriendRequest/{userid}``
+
+请求体:
+1. ``requesterUserid``:long（``requesterUserId``、``targetUserid``、``targetUserId`` 可作为别名）
+2. ``userid``:long（已登录的用户）
+3. ``token``:string（登录用户的token）
+
+拒绝别人的请求与撤回自己发出的请求共用这一个接口，因为它们是同一个动作的两个侧面：请求存在哪一行由涉及的两个ID决定，调用者从不需要自己说明方向。一次调用会把两个账户之间*双向*的待处理请求都清掉，因此无论参数怎么排序都不会留下残行——即使客户端对“谁向谁发的”持有过期判断，也仍能被正确处理。
+
+请求体示例:
+```json
+{
+  "requesterUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+返回值:
+1. ``removed``:boolean（是否确实有请求被移除）
+2. ``requesterUserid``:long（对方账户，按传入值回显）
+
+返回值示例:
+```json
+{
+  "removed": true,
+  "requesterUserid": 2
+}
+```
+
+### removeFriend
+
+请求类型:POST
+
+接口:``/removeFriend/{userid}``
+
+请求体:
+1. ``friendUserid``:long（``friendUserId``、``targetUserid``、``targetUserId`` 可作为别名）
+2. ``userid``:long（已登录的用户）
+3. ``token``:string（登录用户的token）
+
+删除是刻意做成双向的：好友关系是对称的，不存在“一方还留着另一方、另一方却没有”的自洽状态。会话也随之删除——包括它的消息历史——因为被删除的好友不该留下一份还能读的聊天记录。对方会收到 WebSocket 推送；调用者不会，因为它已经在用本次返回值更新自己的侧边栏，而与之竞争的重新加载会把刚删掉的那一行又画回来。
+
+调用者自己的ID返回400；两人不是好友返回404。
+
+请求体示例:
+```json
+{
+  "friendUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+返回值:
+1. ``removed``:boolean
+2. ``friendUserid``:long
+3. ``sessionId``:long（被删除的会话；两人从未有过会话时该键省略而非为 ``null``）
+
+返回值示例:
+```json
+{
+  "removed": true,
+  "friendUserid": 2,
+  "sessionId": 7
+}
+```
+
 ## WebSocket
 
 接口:``ws://{host}:{port}/oxype``
@@ -1622,6 +1979,8 @@
 默认监听 ``0.0.0.0:12346``，可在 ``configs/oxype_websocket.json`` 中通过 ``server_host`` 与 ``server_port`` 配置。
 
 连接建立后必须先发送 ``auth`` 完成鉴权；鉴权成功后服务端会自动订阅该用户已加入的全部会话。未鉴权时发送其他消息会收到 ``error`` 并被断开连接。
+
+推送是**至多一次**的：帧只会写到那一刻处于打开状态的连接，不会为不在线的连接排队。因此会话列表类的推送带着 ``revision``，而同一个计数也会由 ``ready``、``pong`` 与 `getJoinedSessions` 报出，客户端据此能发现自己漏收了一次并重新加载。
 
 ### auth
 
@@ -1643,11 +2002,15 @@
 
 返回值（成功）:
 1. ``type``:string（``ready``）
+2. ``revision``:long（鉴权那一刻调用者的会话列表计数）
+
+``revision`` 与 `getJoinedSessions` 报出的是同一个计数。把它与客户端上次读取列表时记下的值比较，客户端就能区分“重连后什么都没发生”和“漏收了一次 ``sessionsChanged`` 推送”。它是在重建订阅列表*之前*读取的，所以两次之间发生的变更只会让客户端落后，而不会被标成最新。
 
 返回值示例:
 ```json
 {
-  "type": "ready"
+  "type": "ready",
+  "revision": 12
 }
 ```
 
@@ -1679,11 +2042,15 @@
 
 返回值:
 1. ``type``:string（``pong``）
+2. ``revision``:long（发送该 ping 那一刻调用者的会话列表计数）
+
+心跳本来就每二十秒跑一次并且本来就有回包，所以这个计数是顺便带上的。它有实际用处，因为一条一直开着的连接也可能漏掉推送：投递是至多一次的，而连接在 token 刷新后重新鉴权的这段时间里，经它发出的帧都会被丢弃。客户端把这个值与自己记下的值比较，就能在不必等待重连的情况下自愈。
 
 返回值示例:
 ```json
 {
-  "type": "pong"
+  "type": "pong",
+  "revision": 12
 }
 ```
 
@@ -1861,5 +2228,31 @@
   "type": "messageDeleted",
   "sessionId": 1,
   "messageId": 12
+}
+```
+
+### sessionsChanged
+
+方向:服务端 → 客户端
+
+当接收者的*会话列表*发生变化时推送（区别于某个会话内部的变化）。会话可以在没有任何消息发进来的情况下出现——接受好友请求就会创建单聊会话——而那一刻没有做任何动作的一方，如果不收到推送，就要等到下次刷新才能在侧边栏看到它。
+
+该推送发给账户而不是会话，因为接收者不可能已经订阅了一个它还不知情的会话。
+
+载荷里不含任何ID：客户端会重新加载自己的列表，因此这个推送无法用来让客户端显示一个它无权读取的会话。
+
+消息体:
+1. ``type``:string（``sessionsChanged``）
+2. ``revision``:long（本次变化*之后*接收者的会话列表计数）
+
+``revision`` 在帧发出之前就已递增，所以收到该帧的客户端可以记下这个值，并在之后确认自己没有漏掉什么——或者，如果漏掉的是*另一次*推送，会在下一个 ``pong`` 中发现。
+
+**投递是至多一次的。** 帧只写到那一刻处于打开状态的连接，不做任何排队。因此客户端必须把 ``revision`` 当作权威，把推送帧当作优化，而绝不能反过来。没有记下任何计数的客户端，必须朝“重新加载”的方向失败。
+
+消息体示例:
+```json
+{
+  "type": "sessionsChanged",
+  "revision": 13
 }
 ```

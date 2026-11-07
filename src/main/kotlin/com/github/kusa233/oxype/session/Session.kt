@@ -16,7 +16,28 @@ data class Session(
      * stored record instead of honouring a Kotlin default; a non-null field would make
      * every session created before this field existed fail to load.
      */
-    var avatarFile: String? = null
+    var avatarFile: String? = null,
+    /**
+     * True on the one-to-one conversation a friendship owns, absent on every
+     * ordinary group conversation.
+     *
+     * A friend conversation is a real session holding real messages, so it
+     * reuses this record, the message store and the whole websocket path
+     * instead of growing a parallel copy of them. What makes it a friend
+     * conversation is only this flag: the UI hides the group apparatus (owner,
+     * members, management, invites) behind it, the API refuses to let anyone
+     * else join, and the other participant is read as "the member who is not
+     * the viewer" — which is why a flag, and not the peer's id, is what gets
+     * stored. A peer id would describe the session from exactly one side of a
+     * conversation that has two.
+     *
+     * Nullable rather than merely defaulted because sessions are persisted
+     * through Cason's reflective decoder, which passes `null` for every key
+     * missing from the stored record instead of honouring a Kotlin default; a
+     * non-null field would make every session created before this field
+     * existed fail to load.
+     */
+    var friendConversation: Boolean? = null
 ) {
     companion object {
         /** Normalises decoded numbers: JSON round-trips restore small values as Integer. */
@@ -112,5 +133,23 @@ data class Session(
         if (owner != 0L && !hasMember(owner)) {
             addMember(owner)
         }
+    }
+
+    /** Whether this conversation is the private one-to-one of a friendship. */
+    fun isFriendConversation(): Boolean = friendConversation == true
+
+    /**
+     * The other participant of a friend conversation, as seen by [viewerId].
+     *
+     * Derived rather than stored, because a stored peer id could only name one
+     * side of a conversation that has two. Returns null for a group, and also
+     * when the viewer is not one of the two participants — a third party has no
+     * "the other one" to be shown.
+     */
+    fun peerFor(viewerId: Long): Long? {
+        if (!isFriendConversation()) return null
+        val memberIds = memberIds().mapNotNull { toLong(it) }
+        if (memberIds.none { it == viewerId }) return null
+        return memberIds.firstOrNull { it != viewerId }
     }
 }

@@ -58,6 +58,15 @@
     let ssInviteHintEl;
     let ssCreateInviteBtnEl;
     let ssLeaveBtnEl;
+    // Rows a friend conversation hides or relabels: it has no own name, no owner,
+    // no roster, no invite UUIDs and no conversation avatar, and leaving it deletes
+    // the friend rather than leaving a group.
+    let ssNameRowEl;
+    let ssOwnerRowEl;
+    let ssAvatarSectionEl;
+    let ssNavSectionEl;
+    let ssLeaveLabelEl;
+    let ssLeaveBtnLabelEl;
     // Members / management toasts and their entry buttons
     let membersDialog;
     let closeMembersBtnEl;
@@ -130,6 +139,31 @@
     let avatarMaxBytes = 3 * 1024 * 1024;
     /** The conversation id the currently open settings toast belongs to, if any. */
     let ssAvatarTargetSessionId = null;
+
+    // Friends toast: search field, the two request lists, and the profile toast that
+    // shows the account a search found. The account shown is held here rather than in
+    // the DOM so the add button knows whose id to send.
+    let openFriendsBtnEl;
+    let friendsDialogEl;
+    let closeFriendsBtnEl;
+    let friendSearchInputEl;
+    let friendSearchBtnEl;
+    let friendSearchHintEl;
+    let friendIncomingListEl;
+    let friendIncomingEmptyEl;
+    let friendOutgoingListEl;
+    let friendOutgoingEmptyEl;
+    let friendUserDialogEl;
+    let closeFriendUserBtnEl;
+    let friendUserAvatarEl;
+    let friendUserNameEl;
+    let friendUserIdEl;
+    let friendUserStatusEl;
+    let friendUserAddBtnEl;
+    /** The account the profile toast is currently showing, or null when it is closed. */
+    let friendUserTarget = null;
+    /** Guards against two searches overlapping and drawing the older answer last. */
+    let friendSearchSeq = 0;
 
     // How the outgoing message body should be interpreted. 'text' renders literally,
     // 'markdown' runs through the bundled renderer. The value is sent as the message
@@ -320,6 +354,12 @@
         ssInviteHintEl = document.getElementById('ssInviteHint');
         ssCreateInviteBtnEl = document.getElementById('ssCreateInviteBtn');
         ssLeaveBtnEl = document.getElementById('ssLeaveBtn');
+        ssNameRowEl = document.getElementById('ssNameRow');
+        ssOwnerRowEl = document.getElementById('ssOwnerRow');
+        ssAvatarSectionEl = document.getElementById('ssAvatarSection');
+        ssNavSectionEl = document.getElementById('ssNavSection');
+        ssLeaveLabelEl = document.getElementById('ssLeaveLabel');
+        ssLeaveBtnLabelEl = document.getElementById('ssLeaveBtnLabel');
 
         // Members / management toasts
         membersDialog = document.getElementById('membersDialog');
@@ -371,11 +411,29 @@
         ssAvatarChooseBtnEl = document.getElementById('ssAvatarChooseBtn');
         ssAvatarRemoveBtnEl = document.getElementById('ssAvatarRemoveBtn');
 
+        // Friends toast, and the profile toast that a search opens on top of it
+        openFriendsBtnEl = document.getElementById('openFriendsBtn');
+        friendsDialogEl = document.getElementById('friendsDialog');
+        closeFriendsBtnEl = document.getElementById('closeFriendsBtn');
+        friendSearchInputEl = document.getElementById('friendSearchInput');
+        friendSearchBtnEl = document.getElementById('friendSearchBtn');
+        friendSearchHintEl = document.getElementById('friendSearchHint');
+        friendIncomingListEl = document.getElementById('friendIncomingList');
+        friendIncomingEmptyEl = document.getElementById('friendIncomingEmpty');
+        friendOutgoingListEl = document.getElementById('friendOutgoingList');
+        friendOutgoingEmptyEl = document.getElementById('friendOutgoingEmpty');
+        friendUserDialogEl = document.getElementById('friendUserDialog');
+        closeFriendUserBtnEl = document.getElementById('closeFriendUserBtn');
+        friendUserAvatarEl = document.getElementById('friendUserAvatar');
+        friendUserNameEl = document.getElementById('friendUserName');
+        friendUserIdEl = document.getElementById('friendUserId');
+        friendUserStatusEl = document.getElementById('friendUserStatus');
+        friendUserAddBtnEl = document.getElementById('friendUserAddBtn');
+
         // The security warning is built on demand rather than read from the page: a
         // user-supplied chat.html performs the save too, and such a page will not
         // contain markup added here. Building it keeps the warning present whatever
         // page is loaded. See buildStyleSourcesRiskDialog().
-
         // The drawer controls are built for the same reason, on the same page.
         ensureSidebarControls();
 
@@ -642,9 +700,57 @@
             ssAvatarRemoveBtnEl.addEventListener('click', removeSessionAvatar);
         }
 
+        // Friends toast controls
+        if (openFriendsBtnEl) {
+            openFriendsBtnEl.addEventListener('click', openFriendsDialog);
+        }
+
+        if (closeFriendsBtnEl) {
+            closeFriendsBtnEl.addEventListener('click', closeAllDialogs);
+        }
+
+        if (friendSearchBtnEl) {
+            friendSearchBtnEl.addEventListener('click', handleFriendSearch);
+        }
+
+        if (friendSearchInputEl) {
+            // The backend can only look an account up by its numeric id, so anything
+            // that is not a digit is dropped as it is typed instead of being sent and
+            // rejected. Pasting an id with stray characters therefore still works.
+            friendSearchInputEl.addEventListener('input', () => {
+                const digits = friendSearchInputEl.value.replace(/\D+/g, '');
+                if (digits !== friendSearchInputEl.value) friendSearchInputEl.value = digits;
+            });
+            friendSearchInputEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleFriendSearch();
+                }
+            });
+        }
+
+        // The profile toast's close button closes only itself: it is layered over the
+        // friends toast, which must still be there when the user dismisses the result.
+        if (closeFriendUserBtnEl) {
+            closeFriendUserBtnEl.addEventListener('click', closeFriendUserDialog);
+        }
+
+        if (friendUserAddBtnEl) {
+            friendUserAddBtnEl.addEventListener('click', handleFriendAdd);
+        }
+
         // Dialog overlay click to dismiss
         if (dialogOverlay) {
-            dialogOverlay.addEventListener('click', closeAllDialogs);
+            dialogOverlay.addEventListener('click', () => {
+                // The profile toast is stacked over the friends toast, so a click in the
+                // dimmed area dismisses the layer it landed around rather than the whole
+                // stack: the search box and the request lists stay where they were.
+                if (friendUserDialogEl && friendUserDialogEl.style.display !== 'none') {
+                    closeFriendUserDialog();
+                    return;
+                }
+                closeAllDialogs();
+            });
         }
 
         // Right-click on a message row offers reply, and edit and delete where the
@@ -692,6 +798,13 @@
         // Keyboard escape key to dismiss dialogs
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
+                // The profile toast sits on top of the friends toast, so Escape unwinds
+                // the stack one layer at a time -- it dismisses the account being looked
+                // at and leaves the search and the request lists underneath.
+                if (friendUserDialogEl && friendUserDialogEl.style.display !== 'none') {
+                    closeFriendUserDialog();
+                    return;
+                }
                 // The open drawer is the outermost layer on a phone, so Escape unwinds
                 // one layer at a time: a dialog opened from the drawer closes first and
                 // leaves the drawer behind it.
@@ -1172,6 +1285,18 @@
                 if (!session || typeof session !== 'object') return;
                 const sid = session.sessionId !== undefined ? session.sessionId : session.id;
                 if (sid === undefined || sid === null) return;
+                // A friend conversation reports the other person's picture, which belongs
+                // to that account; caching it as the conversation's own would leave the
+                // row showing a stale face after the friendship is deleted.
+                if (session.isFriend) {
+                    const peer = session.peerUserId;
+                    if (peer !== undefined && peer !== null && typeof session.avatarUrl === 'string') {
+                        avatarUrlCache.set(avatarCacheKey('user', peer), session.avatarUrl);
+                        repaintAvatars('user', peer);
+                        syncAvatar('user', peer, session.avatarUrl);
+                    }
+                    return;
+                }
                 if (typeof session.avatarUrl === 'string') {
                     avatarUrlCache.set(avatarCacheKey('session', sid), session.avatarUrl);
                     repaintAvatars('session', sid);
@@ -1882,7 +2007,8 @@
     function isDialogOpen() {
         const dialogs = [
             sessionOptionsDialog, sessionSettingsDialog, membersDialog, manageDialog,
-            memberManageDialog, settingsDialog, styleSourcesDialogEl, styleSourcesRiskDialogEl
+            memberManageDialog, settingsDialog, styleSourcesDialogEl, styleSourcesRiskDialogEl,
+            avatarDialogEl, friendsDialogEl, friendUserDialogEl
         ];
         return dialogs.some((dialog) => dialog && dialog.style.display !== 'none');
     }
@@ -1905,6 +2031,11 @@
         if (styleSourcesRiskDialogEl) styleSourcesRiskDialogEl.style.display = 'none';
         if (styleSourcesRiskScrimEl) styleSourcesRiskScrimEl.style.display = 'none';
         if (avatarDialogEl) avatarDialogEl.style.display = 'none';
+        if (friendsDialogEl) friendsDialogEl.style.display = 'none';
+        if (friendUserDialogEl) friendUserDialogEl.style.display = 'none';
+        // Closing abandons the account the profile toast was showing, so a later click
+        // on Add cannot act on somebody the user is no longer looking at.
+        friendUserTarget = null;
         // Closing abandons any pending conversation-avatar upload, so a later pick
         // cannot be applied to a conversation the user is no longer looking at.
         ssAvatarTargetSessionId = null;
@@ -2108,6 +2239,11 @@
         const info = activeSessionInfo || {};
         const isOwner = Boolean(info.isOwner);
         const isAdmin = Boolean(info.isAdmin);
+        // A friend conversation is just the two of you: it has no name of its own, no
+        // owner, no roster, no invites and no picture of its own -- it wears the other
+        // person's. Everything that only makes sense for a group is hidden here, and
+        // the leave row becomes the way to end the friendship.
+        const isFriend = Boolean(info.isFriend);
 
         if (ssSessionNameEl) ssSessionNameEl.textContent = info.sessionName || '-';
         if (ssSessionDescEl) ssSessionDescEl.textContent = info.description || getI18nText('chat.noDescription', 'No description');
@@ -2129,17 +2265,37 @@
         }
 
         // Management lives in its own toast, reachable through this entry button.
-        if (openManageBtnEl) openManageBtnEl.style.display = (isOwner || isAdmin) ? 'inline-flex' : 'none';
+        if (openManageBtnEl) openManageBtnEl.style.display = (!isFriend && (isOwner || isAdmin)) ? 'inline-flex' : 'none';
         // Invite UUID management is owner or admin only.
-        if (ssInviteSectionEl) ssInviteSectionEl.style.display = (isOwner || isAdmin) ? 'block' : 'none';
+        if (ssInviteSectionEl) ssInviteSectionEl.style.display = (!isFriend && (isOwner || isAdmin)) ? 'block' : 'none';
+
+        // A friend conversation has none of the group's identity fields, so the rows
+        // and the entry points to the roster/management toasts go away entirely. Only
+        // the conversation id is left, which is what the remaining rows can honestly
+        // report.
+        if (ssNameRowEl) ssNameRowEl.style.display = isFriend ? 'none' : 'flex';
+        if (ssOwnerRowEl) ssOwnerRowEl.style.display = isFriend ? 'none' : 'flex';
+        if (ssAvatarSectionEl) ssAvatarSectionEl.style.display = isFriend ? 'none' : 'block';
+        if (ssNavSectionEl) ssNavSectionEl.style.display = isFriend ? 'none' : 'block';
+
+        // Leaving a group keeps you reachable; deleting a friend does not, and this row
+        // is the only way to do it, so it is relabelled rather than duplicated.
+        const leaveLabel = isFriend
+            ? getI18nText('chat.friendDeleteBtn', 'Delete Friend')
+            : getI18nText('chat.leaveSessionBtn', 'Leave Conversation');
+        if (ssLeaveLabelEl) ssLeaveLabelEl.textContent = leaveLabel;
+        if (ssLeaveBtnLabelEl) ssLeaveBtnLabelEl.textContent = leaveLabel;
 
         if (ssNameInputEl) ssNameInputEl.value = info.sessionName || '';
         if (ssDescInputEl) ssDescInputEl.value = info.description || '';
 
         // The conversation avatar lives in this toast too, so the target id is set here
         // as well rather than only on open: an upload must address the conversation the
-        // toast is currently showing even if it was opened by another route.
-        ssAvatarTargetSessionId = activeSessionId;
+        // toast is currently showing even if it was opened by another route. A friend
+        // conversation has no picture of its own to change, so it is left unset.
+        ssAvatarTargetSessionId = isFriend ? null : activeSessionId;
+        if (isFriend) return;
+
         const knownSessionAvatar = cachedAvatarUrl('session', activeSessionId);
         if (knownSessionAvatar === undefined) {
             requestSessionAvatar(activeSessionId);
@@ -2543,9 +2699,21 @@
         }
     }
 
-    /** Leaves the active conversation and removes it from the sidebar. */
+    /**
+     * Ends the active conversation: leaves a group, or deletes a friend.
+     *
+     * Both cases go through the same endpoint -- the server decides from the session
+     * record whether this is a departure or the end of a friendship -- so the wording
+     * is the only thing that changes here.
+     */
     async function handleLeaveSession() {
-        if (!window.confirm(getI18nText('chat.leaveConfirm', 'Leave this conversation?'))) {
+        // Read before the request, because the record is gone by the time it returns.
+        const isFriend = Boolean((activeSessionInfo || {}).isFriend);
+
+        const confirmText = isFriend
+            ? getI18nText('chat.deleteFriendConfirm', 'Delete this friend? The conversation is removed for both of you.')
+            : getI18nText('chat.leaveConfirm', 'Leave this conversation?');
+        if (!window.confirm(confirmText)) {
             return;
         }
 
@@ -2587,7 +2755,10 @@
             }
 
             if (window.OxypeStyle) {
-                window.OxypeStyle.showToast(getI18nText('chat.leaveSuccess', 'You left the conversation.'), 'success');
+                const doneText = isFriend
+                    ? getI18nText('chat.deleteFriendSuccess', 'Friend deleted.')
+                    : getI18nText('chat.leaveSuccess', 'You left the conversation.');
+                window.OxypeStyle.showToast(doneText, 'success');
             }
         } catch (err) {
             console.error('[Chat] Leave session failed:', err);
@@ -2596,6 +2767,570 @@
                 window.OxypeStyle.showToast(getI18nText('chat.updateFailed', `Failed to update: ${reason}`, { reason: reason }), 'error');
             }
         }
+    }
+
+    /**
+     * Shows the friends toast: the id search box and the two pending-request lists.
+     *
+     * The lists are re-read on every open rather than cached, because a request can
+     * arrive or be answered from another client and a stale panel would offer to
+     * accept something already accepted.
+     */
+    async function openFriendsDialog() {
+        if (!friendsDialogEl) return;
+
+        closeAllDialogs();
+        if (friendSearchHintEl) friendSearchHintEl.textContent = '';
+        if (friendSearchInputEl) friendSearchInputEl.value = '';
+        // Empty the lists before the request goes out, so a slow answer never shows
+        // the previous visit's rows under the new visit's heading.
+        renderFriendRequests({ incoming: [], outgoing: [] }, { pending: true });
+
+        if (dialogOverlay) dialogOverlay.style.display = 'block';
+        friendsDialogEl.style.display = 'block';
+
+        await loadFriendRequests();
+    }
+
+    /**
+     * Re-reads the pending friend requests and paints them.
+     *
+     * Only requests are fetched here, not the friend list: the sidebar already renders
+     * the conversations a friendship creates, so a separate friend list would be a
+     * second, differently-styled view of the same people.
+     */
+    async function loadFriendRequests() {
+        if (!window.OxypeCore) return;
+        const auth = window.OxypeCore.getStoredAuth();
+        const userId = currentUser ? currentUser.id : (auth ? auth.userId : null);
+
+        let payload;
+        try {
+            payload = await window.OxypeCore.getFriendRequests(userId, auth ? auth.token : null);
+        } catch (err) {
+            console.warn('[Chat] Failed to load friend requests:', err.message);
+            renderFriendRequests({ incoming: [], outgoing: [] });
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            if (window.OxypeStyle) {
+                window.OxypeStyle.showToast(
+                    getI18nText('chat.loadFailed', `Failed to load: ${reason}`, { reason: reason }),
+                    'error'
+                );
+            }
+            return;
+        }
+
+        renderFriendRequests(payload || {});
+    }
+
+    /**
+     * Paints both request lists.
+     *
+     * @param {{incoming?: Array<object>, outgoing?: Array<object>}} payload
+     * @param {{pending?: boolean}} [options] `pending` suppresses the empty-state text
+     *        while the request is still out, so "no requests" is never claimed early.
+     */
+    function renderFriendRequests(payload, options) {
+        const pending = Boolean(options && options.pending);
+        const incoming = (payload && Array.isArray(payload.incoming)) ? payload.incoming : [];
+        const outgoing = (payload && Array.isArray(payload.outgoing)) ? payload.outgoing : [];
+
+        renderFriendRequestList(friendIncomingListEl, friendIncomingEmptyEl, incoming, 'incoming', pending);
+        renderFriendRequestList(friendOutgoingListEl, friendOutgoingEmptyEl, outgoing, 'outgoing', pending);
+    }
+
+    /**
+     * Draws one request list: incoming rows offer accept/decline, outgoing rows a
+     * withdraw. Both directions are the same shape otherwise, which is why they share
+     * this function instead of each having its own.
+     *
+     * @param {HTMLElement|null} listEl
+     * @param {HTMLElement|null} emptyEl
+     * @param {Array<object>} rows
+     * @param {'incoming'|'outgoing'} direction
+     * @param {boolean} pending
+     */
+    function renderFriendRequestList(listEl, emptyEl, rows, direction, pending) {
+        if (!listEl) return;
+        listEl.innerHTML = '';
+
+        if (rows.length === 0) {
+            if (emptyEl) emptyEl.style.display = pending ? 'none' : 'block';
+            return;
+        }
+        if (emptyEl) emptyEl.style.display = 'none';
+
+        rows.forEach(entry => {
+            if (!entry) return;
+            const otherId = entry.userid !== undefined ? entry.userid : entry.userId;
+            if (otherId === undefined || otherId === null) return;
+            const name = entry.username || `User #${otherId}`;
+            const initial = name.trim().charAt(0).toUpperCase() || '#';
+
+            const row = document.createElement('li');
+            row.className = 'friend-request-item';
+            row.dataset.friendUserId = String(otherId);
+            row.innerHTML = `
+                <div class="friend-request-avatar" data-avatar-user="${escapeHtml(otherId)}" data-avatar-initial="${escapeHtml(initial)}">${escapeHtml(initial)}</div>
+                <div class="friend-request-meta">
+                    <div class="friend-request-name">${escapeHtml(name)}</div>
+                    <div class="friend-request-id">ID: ${escapeHtml(otherId)}</div>
+                </div>
+                <div class="friend-request-actions"></div>
+            `;
+
+            // The payload already carries each account's picture, so the row is drawn
+            // from it directly instead of asking per person.
+            if (typeof entry.avatarUrl === 'string') {
+                avatarUrlCache.set(avatarCacheKey('user', otherId), entry.avatarUrl);
+                paintAvatarElement(row.querySelector('.friend-request-avatar'), 'user', otherId, initial);
+            } else {
+                requestUserAvatar(otherId);
+            }
+
+            const actions = row.querySelector('.friend-request-actions');
+            if (direction === 'incoming') {
+                actions.appendChild(buildFriendRowButton(
+                    getI18nText('chat.friendAcceptBtn', 'Accept'),
+                    'btn-primary',
+                    () => handleFriendRequestAnswer(otherId, true)
+                ));
+                actions.appendChild(buildFriendRowButton(
+                    getI18nText('chat.friendDeclineBtn', 'Decline'),
+                    'btn-secondary',
+                    () => handleFriendRequestAnswer(otherId, false)
+                ));
+            } else {
+                actions.appendChild(buildFriendRowButton(
+                    getI18nText('chat.friendWithdrawBtn', 'Withdraw'),
+                    'btn-secondary',
+                    () => handleFriendRequestAnswer(otherId, false)
+                ));
+            }
+
+            listEl.appendChild(row);
+        });
+    }
+
+    /** One small button for a request row. */
+    function buildFriendRowButton(label, modifier, onClick) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `btn-sm ${modifier} friend-request-btn`;
+        btn.textContent = label;
+        btn.addEventListener('click', onClick);
+        return btn;
+    }
+
+    /**
+     * Accepts or withdraws/declines one request.
+     *
+     * A failed attempt leaves the row in place: the request is still pending on the
+     * server, so removing it would tell the user something that is not true.
+     *
+     * @param {string|number} otherId
+     * @param {boolean} accept
+     */
+    async function handleFriendRequestAnswer(otherId, accept) {
+        if (!window.OxypeCore) return;
+        const auth = window.OxypeCore.getStoredAuth();
+        const userId = currentUser ? currentUser.id : (auth ? auth.userId : null);
+        const token = auth ? auth.token : null;
+
+        try {
+            if (accept) {
+                const result = await window.OxypeCore.acceptFriendRequest(otherId, userId, token);
+                await loadFriendRequests();
+                // Acceptance creates the one-to-one conversation, so the sidebar has to
+                // be told about it: the row is added here rather than waiting for a
+                // reload, and the conversation opens straight away.
+                const sessionId = result && (result.sessionId !== undefined ? result.sessionId : result.session_id);
+                closeAllDialogs();
+                if (sessionId !== undefined && sessionId !== null) {
+                    addFriendSessionToList(sessionId, otherId, getUserNameById(otherId));
+                    await selectSession(sessionId);
+                } else {
+                    await reloadSessionsFromServer();
+                }
+                if (window.OxypeStyle) {
+                    window.OxypeStyle.showToast(
+                        getI18nText('chat.friendAccepted', 'Friend request accepted.'),
+                        'success'
+                    );
+                }
+            } else {
+                await window.OxypeCore.declineFriendRequest(otherId, userId, token);
+                await loadFriendRequests();
+                if (window.OxypeStyle) {
+                    window.OxypeStyle.showToast(
+                        getI18nText('chat.friendDeclined', 'Friend request removed.'),
+                        'success'
+                    );
+                }
+            }
+        } catch (err) {
+            console.error('[Chat] Friend request answer failed:', err);
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            if (window.OxypeStyle) {
+                window.OxypeStyle.showToast(
+                    getI18nText('chat.updateFailed', `Failed to update: ${reason}`, { reason: reason }),
+                    'error'
+                );
+            }
+        }
+    }
+
+    /**
+     * Looks an account up by id and shows it in the profile toast.
+     *
+     * An id nobody owns is answered with a line under the search box rather than a
+     * toast of its own: the user is mid-search and a second dialog to dismiss would
+     * only get in the way.
+     */
+    async function handleFriendSearch() {
+        if (!friendSearchInputEl || !window.OxypeCore) return;
+
+        const raw = friendSearchInputEl.value.replace(/\D+/g, '');
+        if (raw.length === 0) {
+            if (friendSearchHintEl) {
+                friendSearchHintEl.textContent = getI18nText('chat.friendSearchEmpty', 'Enter a numeric user ID.');
+            }
+            return;
+        }
+
+        // A stale answer must not overwrite a newer one when two searches overlap.
+        friendSearchSeq += 1;
+        const seq = friendSearchSeq;
+        if (friendSearchHintEl) friendSearchHintEl.textContent = '';
+
+        const auth = window.OxypeCore.getStoredAuth();
+        const userId = currentUser ? currentUser.id : (auth ? auth.userId : null);
+        const token = auth ? auth.token : null;
+
+        try {
+            const result = await window.OxypeCore.findUser(raw, userId, token);
+            if (seq !== friendSearchSeq) return;
+
+            if (!result || !result.found) {
+                // A refusal also covers looking up yourself, which the server reports
+                // as "not found" because there is nothing to befriend.
+                if (friendSearchHintEl) {
+                    friendSearchHintEl.textContent = String(raw) === String(userId)
+                        ? getI18nText('chat.friendSearchSelf', 'That is your own ID.')
+                        : getI18nText('chat.friendSearchNotFound', 'No account with that ID.');
+                }
+                return;
+            }
+
+            openFriendUserDialog({
+                userid: result.userid,
+                username: result.username,
+                avatarUrl: result.avatarUrl,
+                isFriend: Boolean(result.isFriend),
+                requestPending: Boolean(result.requestPending),
+                requestIncoming: Boolean(result.requestIncoming)
+            });
+        } catch (err) {
+            if (seq !== friendSearchSeq) return;
+            console.warn('[Chat] Friend lookup failed:', err.message);
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            if (friendSearchHintEl) {
+                friendSearchHintEl.textContent = getI18nText('chat.friendSearchFailed', `Search failed: ${reason}`, { reason: reason });
+            }
+        }
+    }
+
+    /**
+     * Shows the found account, with its picture on top and a button whose meaning
+     * follows the relationship: add, accept, or nothing to do.
+     *
+     * @param {{userid: *, username?: string, avatarUrl?: string, isFriend?: boolean, requestPending?: boolean, requestIncoming?: boolean}} user
+     */
+    function openFriendUserDialog(user) {
+        if (!friendUserDialogEl || !user) return;
+
+        friendUserTarget = {
+            userid: user.userid,
+            username: user.username || `User #${user.userid}`,
+            avatarUrl: typeof user.avatarUrl === 'string' ? user.avatarUrl : ''
+        };
+
+        const name = friendUserTarget.username;
+        if (friendUserNameEl) friendUserNameEl.textContent = name;
+        if (friendUserIdEl) friendUserIdEl.textContent = `ID: ${user.userid}`;
+
+        if (friendUserAvatarEl) {
+            const initial = name.trim().charAt(0).toUpperCase() || '#';
+            friendUserAvatarEl.dataset.avatarUser = String(user.userid);
+            friendUserAvatarEl.dataset.avatarInitial = initial;
+            // The search result already carries this account's picture, and an empty
+            // one is a real answer rather than a missing one. Caching the answer even
+            // when it is empty is what stops a second request for it: `getAvatar` is
+            // only open to accounts you share a conversation with, so asking here
+            // would fail for exactly the strangers this dialog exists to find.
+            if (typeof user.avatarUrl === 'string') {
+                avatarUrlCache.set(avatarCacheKey('user', user.userid), user.avatarUrl);
+            }
+            paintAvatarElement(friendUserAvatarEl, 'user', user.userid, initial);
+        }
+
+        // The button says what clicking it will do, and is withdrawn when there is
+        // nothing left to do -- an existing friend has no pending action here.
+        let label = '';
+        let disabled = false;
+        let status = '';
+        if (user.isFriend) {
+            label = getI18nText('chat.friendAlreadyFriend', 'Already friends');
+            disabled = true;
+            status = getI18nText('chat.friendStatusFriend', 'You are friends.');
+        } else if (user.requestIncoming) {
+            // They asked first, so this button accepts rather than sends a second
+            // request that would only be collapsed into the same acceptance.
+            label = getI18nText('chat.friendAcceptBtn', 'Accept');
+            status = getI18nText('chat.friendStatusIncoming', 'This person has sent you a friend request.');
+        } else if (user.requestPending) {
+            label = getI18nText('chat.friendRequestedBtn', 'Request Sent');
+            disabled = true;
+            status = getI18nText('chat.friendStatusPending', 'A friend request is waiting for an answer.');
+        } else {
+            label = getI18nText('chat.friendAddBtn', 'Add Friend');
+        }
+
+        if (friendUserAddBtnEl) {
+            friendUserAddBtnEl.textContent = label;
+            friendUserAddBtnEl.disabled = disabled;
+            friendUserAddBtnEl.style.display = label ? 'inline-flex' : 'none';
+        }
+        if (friendUserStatusEl) {
+            friendUserStatusEl.textContent = status;
+            friendUserStatusEl.style.display = status ? 'block' : 'none';
+        }
+
+        if (dialogOverlay) dialogOverlay.style.display = 'block';
+        friendUserDialogEl.style.display = 'block';
+    }
+
+    /** Closes only the profile toast, leaving the friends toast underneath it. */
+    function closeFriendUserDialog() {
+        if (friendUserDialogEl) friendUserDialogEl.style.display = 'none';
+        friendUserTarget = null;
+        if (friendUserDialogEl && friendsDialogEl && friendsDialogEl.style.display !== 'none') {
+            if (dialogOverlay) dialogOverlay.style.display = 'block';
+        }
+    }
+
+    /**
+     * Sends a friend request for the account currently in the profile toast, or
+     * accepts theirs when one is already waiting.
+     *
+     * The outcome is always re-read from the server rather than guessed: a mutual
+     * request is accepted immediately on the server, so the reply may say the
+     * friendship already exists and carry the conversation with it.
+     */
+    async function handleFriendAdd() {
+        if (!friendUserTarget || !window.OxypeCore) return;
+        const targetId = friendUserTarget.userid;
+        const auth = window.OxypeCore.getStoredAuth();
+        const userId = currentUser ? currentUser.id : (auth ? auth.userId : null);
+        const token = auth ? auth.token : null;
+
+        if (friendUserAddBtnEl) friendUserAddBtnEl.disabled = true;
+
+        try {
+            const result = await window.OxypeCore.sendFriendRequest(targetId, userId, token);
+            const status = result ? String(result.status || '') : '';
+            const sessionId = result ? (result.sessionId !== undefined ? result.sessionId : result.session_id) : undefined;
+
+            closeFriendUserDialog();
+
+            if (status === 'accepted') {
+                addFriendSessionToList(sessionId, targetId, getUserNameById(targetId));
+                if (window.OxypeStyle) {
+                    window.OxypeStyle.showToast(
+                        getI18nText('chat.friendAccepted', 'Friend request accepted.'),
+                        'success'
+                    );
+                }
+                await selectSession(sessionId);
+            } else {
+                if (window.OxypeStyle) {
+                    window.OxypeStyle.showToast(
+                        getI18nText('chat.friendRequestSent', 'Friend request sent.'),
+                        'success'
+                    );
+                }
+            }
+
+            if (friendsDialogEl && friendsDialogEl.style.display !== 'none') {
+                await loadFriendRequests();
+            }
+        } catch (err) {
+            console.error('[Chat] Send friend request failed:', err);
+            const reason = describeRequestError(err, getI18nText('common.error', 'An error occurred'));
+            const message = /already friends/i.test(reason)
+                ? getI18nText('chat.friendAlreadyFriend', 'Already friends')
+                : getI18nText('chat.updateFailed', `Failed to update: ${reason}`, { reason: reason });
+            if (window.OxypeStyle) window.OxypeStyle.showToast(message, 'error');
+        } finally {
+            if (friendUserAddBtnEl) friendUserAddBtnEl.disabled = false;
+        }
+    }
+
+    /** Best-known display name for an account, for naming a row being added. */
+    function getUserNameById(userId) {
+        const id = String(userId);
+        if (activeSessionUsers.has(id)) return activeSessionUsers.get(id);
+        if (friendUserTarget && String(friendUserTarget.userid) === id) return friendUserTarget.username;
+        if (currentUser && String(currentUser.id) === id) return currentUser.username;
+        return `User #${id}`;
+    }
+
+    /**
+     * Adds (or refreshes) the sidebar row for a friend conversation.
+     *
+     * The row is created from the account rather than from a session request because
+     * the server names a friend conversation after the other person: asking for the
+     * session would return the same two fields, one round trip later.
+     *
+     * @param {string|number} sessionId
+     * @param {string|number} peerUserId
+     * @param {string} peerName
+     */
+    function addFriendSessionToList(sessionId, peerUserId, peerName) {
+        if (!sessionListEl || sessionId === undefined || sessionId === null) return;
+        const sId = String(sessionId);
+        const name = peerName || `User #${peerUserId}`;
+        sessionsMap.set(sId, { sessionId: sId, sessionName: name, description: '', isFriend: true, peerUserId: peerUserId, lastActivity: Date.now() });
+
+        // An existing row is used as-is: the buddy may have been added by a websocket
+        // session update first, and a second row for one conversation would show the
+        // same messages twice in the sidebar.
+        const existing = sessionListEl.querySelector(`[data-session-id="${sId}"]`);
+        if (existing) {
+            const nameEl = existing.querySelector('.session-name');
+            if (nameEl) nameEl.textContent = name;
+            return;
+        }
+
+        if (emptySessionsPlaceholder) emptySessionsPlaceholder.style.display = 'none';
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'session-item';
+        btn.dataset.sessionId = sId;
+        const initial = name.trim().charAt(0).toUpperCase() || '#';
+        btn.innerHTML = `
+            <div class="session-avatar" data-avatar-user="${escapeHtml(peerUserId)}" data-avatar-initial="${escapeHtml(initial)}">${escapeHtml(initial)}</div>
+            <div class="session-details">
+                <div class="session-name">${escapeHtml(name)}</div>
+                <div class="session-subtext session-last-message"></div>
+            </div>
+        `;
+        // A friend conversation's picture is the other person's, which the avatar
+        // machinery already knows how to paint by account id.
+        const avatarEl = btn.querySelector('.session-avatar');
+        if (avatarEl) {
+            const known = cachedAvatarUrl('user', peerUserId);
+            if (known === undefined) requestUserAvatar(peerUserId);
+            else paintAvatarElement(avatarEl, 'user', peerUserId, initial);
+        }
+
+        btn.addEventListener('click', () => selectSession(sId));
+        sessionListEl.insertBefore(btn, sessionListEl.firstChild);
+    }
+
+    /**
+     * Rebuilds the sidebar from the server, for the paths whose new conversation is
+     * not described by the answer (a friendship accepted on the other side).
+     */
+    async function reloadSessionsFromServer() {
+        const auth = window.OxypeCore ? window.OxypeCore.getStoredAuth() : null;
+        const userId = currentUser ? currentUser.id : (auth ? auth.userId : null);
+        if (!userId) return;
+        await loadUserDataAndSessions(userId);
+    }
+
+    /**
+     * Handles the push that says the caller's conversation list changed.
+     *
+     * The server sends this when something happens to the account rather than to a
+     * conversation -- a friend request arriving, a request being accepted and so
+     * creating the one-to-one conversation. None of those are a message in a
+     * subscribed session, so nothing else would tell an already-open client.
+     *
+     * The list is reloaded rather than patched from the payload: the push
+     * deliberately carries no ids, so the client asks for its own list and renders
+     * whatever the server says it may see. The friends dialog is refreshed too, so
+     * an arriving request appears without reopening it.
+     */
+    let sessionsChangedTimer = null;
+    function handleSessionsChanged() {
+        // Several pushes can arrive within a moment of each other (a request sent
+        // and accepted); one reload covers them all.
+        if (sessionsChangedTimer) clearTimeout(sessionsChangedTimer);
+        sessionsChangedTimer = setTimeout(async () => {
+            sessionsChangedTimer = null;
+            try {
+                await reloadSessionsFromServer();
+                if (friendsDialogEl && friendsDialogEl.style.display !== 'none') {
+                    await loadFriendRequests();
+                }
+            } catch (err) {
+                console.warn('[Chat] Refreshing after a session change failed:', err.message);
+            }
+        }, 150);
+    }
+
+    /**
+     * The server's revision for the list currently on screen.
+     *
+     * A push is delivered once, to whatever connection is open at that moment, and
+     * nothing is queued for one that is not. A tab that was disconnected when a
+     * friend request arrived therefore never hears about it, and would show
+     * yesterday's sidebar until the page was reloaded by hand. Re-reading on every
+     * reconnect covers that but cannot distinguish "nothing happened" from "the push
+     * was lost", so every reconnect would pay for a full reload.
+     *
+     * The server counts the changes it announces and the membership writes that
+     * silently change the list, and reports that number in the answer it gives when
+     * the list is read, in the `ready` frame after a reconnect, and on every
+     * heartbeat `pong`. Storing the number alongside the rendered list turns a
+     * reconnect into a comparison: equal means nothing can have been missed, and
+     * different means the list is re-read.
+     *
+     * `null` means no revision has been recorded yet (first load still in flight, or
+     * a server too old to report one), and every caller treats it as "unknown",
+     * which reloads. Guessing "current" there would risk sitting on a stale list.
+     */
+    let lastSeenSessionsRevision = null;
+
+    /**
+     * Compares a revision reported by the server against the one the rendered list
+     * was read at, reloading the list when they differ.
+     *
+     * Only a mismatch triggers work, so the heartbeat can carry this every twenty
+     * seconds for free, and a reconnect where nothing happened costs nothing. A
+     * reload in flight already sets a timer, so repeated mismatches before it lands
+     * collapse into the single reload it is about to do.
+     *
+     * @param {number|null} revision The revision the server just reported.
+     */
+    function noteSessionsRevision(revision) {
+        if (typeof revision !== 'number' || !isFinite(revision)) return;
+        if (lastSeenSessionsRevision !== null && revision === lastSeenSessionsRevision) return;
+        // The value is deliberately *not* adopted here: it only becomes the recorded
+        // revision once a list read succeeds and records it. Adopting it up front would
+        // mean that a reload which failed left the sidebar stale but the number
+        // current, so every later heartbeat would match and the tab would never catch
+        // up. Leaving it behind costs at most one extra reload, because a mismatch
+        // repeats until a read lands.
+        //
+        // With nothing recorded yet there is no list to compare against -- the first
+        // load is still in flight, or it failed and left the sidebar empty -- so this
+        // reloads rather than trusting a number it has not yet been able to tie to
+        // anything. That is also what the caller did before revisions existed, so a
+        // boot-time read that failed still recovers here.
+        handleSessionsChanged();
     }
 
     /**
@@ -2726,23 +3461,26 @@
         // 2. Fetch joined sessions via GET /getJoinedSessions/{userid}
         // Requirement: Do NOT add fake session templates. Only render what comes from the backend.
         try {
-            const rawSessionIds = await window.OxypeCore.getJoinedSessions(userId);
+            const envelope = await window.OxypeCore.getJoinedSessionsEnvelope(userId);
+            const rawSessionIds = envelope ? envelope.sessions : null;
             if (Array.isArray(rawSessionIds) && rawSessionIds.length > 0) {
                 // Batch query session objects from /getSessions to resolve real session names immediately
                 try {
                     const sessionObjects = await window.OxypeCore.getSessions(rawSessionIds);
                     if (sessionObjects && Array.isArray(sessionObjects) && sessionObjects.length > 0) {
-                        renderSessionList(sessionObjects);
+                        renderSessionList(sessionObjects, envelope ? envelope.revision : null);
                         return;
                     }
                 } catch (batchErr) {
                     console.warn('[Chat] Batch getSessions failed, rendering raw list:', batchErr.message);
                 }
             }
-            renderSessionList(rawSessionIds || []);
+            renderSessionList(rawSessionIds || [], envelope ? envelope.revision : null);
         } catch (err) {
             console.warn('[Chat] getJoinedSessions request completed with status:', err.message);
-            // Render clean empty state
+            // Render clean empty state. The revision is left untouched: a failed read
+            // proves nothing about the list, so claiming the last-seen value is still
+            // current would suppress the very reload that is needed.
             renderSessionList([]);
         }
     }
@@ -3324,8 +4062,14 @@
      * Render the session list strictly from real data.
      * No fake or mock session templates are introduced.
      * @param {Array<Object|number>} sessions 
+     * @param {number|null} [revision] The server's revision for exactly this list.
+     *   Recorded whenever one is supplied, so that a later comparison can tell a
+     *   reconnect where nothing happened from one where a push was lost.
      */
-    function renderSessionList(sessions) {
+    function renderSessionList(sessions, revision) {
+        if (typeof revision === 'number' && isFinite(revision)) {
+            lastSeenSessionsRevision = revision;
+        }
         if (!sessionListEl) return;
 
         // Clear existing session buttons except placeholder
@@ -3350,8 +4094,13 @@
             const sessionId = typeof session === 'object' ? (session.sessionId || session.id) : session;
             let sessionName = typeof session === 'object' ? (session.sessionName || session.name || `Session #${sessionId}`) : `Session #${sessionId}`;
             const sessionDesc = (typeof session === 'object' && session.description) ? session.description : '';
+            // A friend conversation has no picture of its own: the server already
+            // answered with the other person's name and image, so the row is drawn
+            // against that account rather than against the conversation id.
+            const isFriend = Boolean(typeof session === 'object' && session.isFriend);
+            const peerUserId = typeof session === 'object' ? session.peerUserId : undefined;
 
-            sessionsMap.set(String(sessionId), { sessionId, sessionName, description: sessionDesc, lastActivity: (typeof session === 'object' && (session.lastActivity || session.timestamp)) || 0 });
+            sessionsMap.set(String(sessionId), { sessionId, sessionName, description: sessionDesc, lastActivity: (typeof session === 'object' && (session.lastActivity || session.timestamp)) || 0, isFriend: isFriend, peerUserId: peerUserId });
 
             const sessionBtn = document.createElement('button');
             sessionBtn.className = 'session-item';
@@ -3359,10 +4108,13 @@
             sessionBtn.dataset.sessionId = String(sessionId);
 
             const avatarChar = sessionName.trim().charAt(0).toUpperCase() || '#';
+            const avatarAttr = (isFriend && peerUserId !== undefined && peerUserId !== null)
+                ? `data-avatar-user="${escapeHtml(peerUserId)}"`
+                : `data-avatar-session="${escapeHtml(sessionId)}"`;
 
             // The sidebar subtitle displays the latest message preview ("sender: message content"), blank when empty.
             sessionBtn.innerHTML = `
-                <div class="session-avatar" data-avatar-session="${escapeHtml(sessionId)}" data-avatar-initial="${escapeHtml(avatarChar)}">${escapeHtml(avatarChar)}</div>
+                <div class="session-avatar" ${avatarAttr} data-avatar-initial="${escapeHtml(avatarChar)}">${escapeHtml(avatarChar)}</div>
                 <div class="session-details">
                     <div class="session-name">${escapeHtml(sessionName)}</div>
                     <div class="session-subtext session-last-message"></div>
@@ -3373,7 +4125,18 @@
             // otherwise left to the bulk sweep that follows this loop. The bytes are
             // stored too, not just drawn: a row that only ever painted from the URL would
             // refetch the image on every load, which is what the hash exists to avoid.
-            if (typeof session.avatarUrl === 'string') {
+            if (isFriend && peerUserId !== undefined && peerUserId !== null) {
+                const avatarEl = sessionBtn.querySelector('.session-avatar');
+                if (typeof session.avatarUrl === 'string') {
+                    avatarUrlCache.set(avatarCacheKey('user', peerUserId), session.avatarUrl);
+                    paintAvatarElement(avatarEl, 'user', peerUserId, avatarChar);
+                    syncAvatar('user', peerUserId, session.avatarUrl);
+                } else if (cachedAvatarUrl('user', peerUserId) !== undefined) {
+                    paintAvatarElement(avatarEl, 'user', peerUserId, avatarChar);
+                } else {
+                    requestUserAvatar(peerUserId);
+                }
+            } else if (typeof session.avatarUrl === 'string') {
                 avatarUrlCache.set(avatarCacheKey('session', sessionId), session.avatarUrl);
                 paintAvatarElement(sessionBtn.querySelector('.session-avatar'), 'session', sessionId, avatarChar);
                 syncAvatar('session', sessionId, session.avatarUrl);
@@ -3427,7 +4190,9 @@
                         const sName = sessionObj.sessionName || sessionObj.name;
                         const sDesc = sessionObj.description || '';
                         if (sName) {
-                            sessionsMap.set(sId, { sessionId: sId, sessionName: sName, description: sDesc });
+                            const isFriend = Boolean(sessionObj.isFriend);
+                            const peerUserId = sessionObj.peerUserId;
+                            sessionsMap.set(sId, { sessionId: sId, sessionName: sName, description: sDesc, isFriend: isFriend, peerUserId: peerUserId });
 
                             // Update corresponding sidebar element display name and avatar
                             const sessionBtn = sessionListEl.querySelector(`[data-session-id="${sId}"]`);
@@ -3441,10 +4206,23 @@
                                     // would delete the <img> and fall back to a letter.
                                     const initial = sName.trim().charAt(0).toUpperCase() || '#';
                                     avatarEl.dataset.avatarInitial = initial;
-                                    if (typeof sessionObj.avatarUrl === 'string') {
-                                        avatarUrlCache.set(avatarCacheKey('session', sId), sessionObj.avatarUrl);
+                                    // A friend conversation is drawn against the other
+                                    // account, so the key and the attribute both have to
+                                    // switch -- otherwise the refresh would overwrite a
+                                    // correct face with the conversation's empty one.
+                                    const kind = (isFriend && peerUserId !== undefined && peerUserId !== null) ? 'user' : 'session';
+                                    const key = kind === 'user' ? peerUserId : sId;
+                                    if (kind === 'user') {
+                                        avatarEl.dataset.avatarUser = String(peerUserId);
+                                        delete avatarEl.dataset.avatarSession;
+                                    } else {
+                                        avatarEl.dataset.avatarSession = String(sId);
+                                        delete avatarEl.dataset.avatarUser;
                                     }
-                                    paintAvatarElement(avatarEl, 'session', sId, initial);
+                                    if (typeof sessionObj.avatarUrl === 'string') {
+                                        avatarUrlCache.set(avatarCacheKey(kind, key), sessionObj.avatarUrl);
+                                    }
+                                    paintAvatarElement(avatarEl, kind, key, initial);
                                 }
                             }
 
@@ -3461,6 +4239,17 @@
                 }
             }).catch(err => {
                 console.warn('[Chat] Failed to batch load session names via /getSessions:', err.message);
+            });
+        }
+
+        // The rows above are newly built, so the highlighted one is re-marked here.
+        // The list is redrawn whenever the roster changes -- including after a
+        // reconnect -- and marking the open conversation is otherwise something only
+        // selectSession does, which a redraw does not go through. Without this the
+        // reader's own conversation would silently stop looking selected.
+        if (activeSessionId) {
+            sessionListEl.querySelectorAll('.session-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.sessionId === String(activeSessionId));
             });
         }
     }
@@ -3629,6 +4418,10 @@
                 handleIncomingMessageDelete(payload);
                 return;
             }
+            if (payload.type === 'sessionsChanged') {
+                handleSessionsChanged();
+                return;
+            }
             if (payload.type !== 'message') return;
             const sid = payload.sessionId !== undefined ? payload.sessionId : payload.session_id;
             if (sid == null || activeSessionId == null || String(sid) !== String(activeSessionId)) return;
@@ -3659,6 +4452,39 @@
             appendMessage({ text: body.text, format: body.format, sender: sender, senderId: senderId, isSelf: self, timestamp: formatClockTime(stamp), timestampMs: stamp, messageId: id, editedAt: msg.editedAt ? Number(msg.editedAt) : 0, reply: body.reply });
             if (!self && /^User #\d+$/.test(sender)) resolveFallbackSender(senderId);
             updateActiveSessionLastMessage(sender, previewOfBody(body.text), stamp);
+        });
+
+        // A push is delivered once, to whatever connection is open at that moment. Any
+        // change that happens while this tab is disconnected -- a dropped network, a
+        // sleeping laptop, or a server restart, which ends every open socket -- is
+        // therefore lost outright, and the sidebar keeps showing yesterday's list until
+        // the page is reloaded by hand. The server reports the revision of this
+        // account's list in the `ready` frame, so the reconnect itself says whether
+        // anything happened in the gap: same revision means no reload, a different one
+        // means something was missed. Only the roster is refreshed, so a reconnect does
+        // not yank the reader out of the transcript they were reading.
+        window.addEventListener('oxype:websocket:ready', (event) => {
+            const message = event && event.detail ? event.detail.message : null;
+            const revision = message && typeof message === 'object' ? message.revision : null;
+            if (revision === null || revision === undefined) {
+                // A server that predates the field cannot say, so the reload happens
+                // unconditionally as it always did.
+                handleSessionsChanged();
+                return;
+            }
+            noteSessionsRevision(revision);
+        });
+
+        // The heartbeat already makes a round trip every twenty seconds, and the pong
+        // carries the same revision, so a connection that stayed open the whole time
+        // also catches a push it missed -- send() is a no-op while the socket is
+        // authenticating again after a token refresh, and there is a window during the
+        // handshake when the user id is not set yet, so checking only on reconnect
+        // would leave those tabs stale until the page was reloaded.
+        window.addEventListener('oxype:websocket:revision', (event) => {
+            const detail = event ? event.detail : null;
+            if (!detail) return;
+            noteSessionsRevision(detail.revision);
         });
     }
 

@@ -79,6 +79,23 @@ object MessageManager {
         )
     }
 
+    /**
+     * Removes every message of a conversation that no longer exists.
+     *
+     * Messages are keyed by `[session id][sequence]` under one prefix, so they
+     * can only be found by walking sequence numbers — there is no prefix scan
+     * available here. The walk is bounded by the conversation's own high-water
+     * mark, which is exactly the set of slots that could ever have been written,
+     * so this is linear in messages actually sent rather than in time.
+     */
+    fun purgeSession(sessionId: Long) {
+        val maxSeq = maxReceivedMessageSeq(sessionId)
+        for (seq in 1..maxSeq) {
+            STORAGE.remove(createMessageKey(sessionId, seq))
+        }
+        STORAGE.remove(BytesUtil.concat(SESSION_MESSAGE_SEQ_PREFIX, Base256.longToBuf(sessionId)))
+    }
+
     fun getMessage(sessionId: Long, messageSeq: Long): Message? {
         val source = STORAGE[createMessageKey(sessionId, messageSeq), String::class] ?: return null
         val json = JSONParser.parseObject(source)

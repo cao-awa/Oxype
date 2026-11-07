@@ -789,6 +789,124 @@
         }
 
         /**
+         * Look up an account by exact id, for the friend search field.
+         * GET /findUser/{userid}
+         *
+         * The search box only accepts digits, so the id is the only thing that
+         * can be searched by; there is no name lookup.
+         */
+        async findUser(targetUserId, userId = null, token = null) {
+            if (!targetUserId) {
+                throw new Error('User ID is required');
+            }
+
+            return await this.request(`/findUser/${encodeURIComponent(targetUserId)}`, {
+                method: 'GET'
+            });
+        }
+
+        /**
+         * List the current user's friends.
+         * GET /getFriends/{userid}
+         */
+        async getFriends(userId = null, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/getFriends/${encodeURIComponent(currentUserId)}`, {
+                method: 'GET'
+            });
+        }
+
+        /**
+         * List incoming and outgoing friend requests.
+         * GET /getFriendRequests/{userid}
+         */
+        async getFriendRequests(userId = null, token = null) {
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/getFriendRequests/${encodeURIComponent(currentUserId)}`, {
+                method: 'GET'
+            });
+        }
+
+        /**
+         * Send a friend request, or accept one the other side already sent.
+         * POST /sendFriendRequest/{userid}
+         */
+        async sendFriendRequest(targetUserId, userId = null, token = null) {
+            if (!targetUserId) {
+                throw new Error('Target user ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/sendFriendRequest/${encodeURIComponent(currentUserId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token, { targetUserid: targetUserId })
+            });
+        }
+
+        /**
+         * Accept a pending friend request, which creates the shared conversation.
+         * POST /acceptFriendRequest/{userid}
+         */
+        async acceptFriendRequest(requesterUserId, userId = null, token = null) {
+            if (!requesterUserId) {
+                throw new Error('Requester user ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/acceptFriendRequest/${encodeURIComponent(currentUserId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token, { requesterUserid: requesterUserId })
+            });
+        }
+
+        /**
+         * Decline a request addressed to the current user, or withdraw one they sent.
+         * POST /declineFriendRequest/{userid}
+         */
+        async declineFriendRequest(otherUserId, userId = null, token = null) {
+            if (!otherUserId) {
+                throw new Error('User ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/declineFriendRequest/${encodeURIComponent(currentUserId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token, { requesterUserid: otherUserId })
+            });
+        }
+
+        /**
+         * End a friendship, destroying the conversation it owns.
+         * POST /removeFriend/{userid}
+         *
+         * Removing a friend is symmetric, so there is no half-friendship to
+         * consider on the other side.
+         */
+        async removeFriend(friendUserId, userId = null, token = null) {
+            if (!friendUserId) {
+                throw new Error('Friend user ID is required');
+            }
+
+            const storedAuth = this.getStoredAuth();
+            const currentUserId = (userId !== null && userId !== undefined) ? userId : (storedAuth && storedAuth.userId);
+
+            return await this.request(`/removeFriend/${encodeURIComponent(currentUserId)}`, {
+                method: 'POST',
+                body: this.authBody(userId, token, { friendUserid: friendUserId })
+            });
+        }
+
+        /**
          * List a session's live invite UUIDs (owner only)
          * POST /getSessionInvites/{sessionId}
          */
@@ -847,14 +965,20 @@
         }
 
         /**
-         * Fetch the list of sessions joined by the user
+         * Fetch the list of sessions joined by the user, together with the revision
+         * that list was read at.
          * GET /getJoinedSessions/{userid}
-         * Returns sessions array from response envelope (e.g. data.sessions)
-         * 
-         * @param {number|string} userId 
-         * @returns {Promise<Array<number|string|Object>>}
+         *
+         * The server answers `{ sessions, isEmpty, revision }`. `revision` counts the
+         * changes that a client had to be told about, so a caller can compare it
+         * later to find out whether a push arrived while it was not listening.
+         * Servers that predate the field simply omit it, in which case the revision
+         * is `null` and callers must treat the answer as "unknown", not as "current".
+         *
+         * @param {number|string} userId
+         * @returns {Promise<{sessions: Array<number|string|Object>, revision: (number|null)}>}
          */
-        async getJoinedSessions(userId) {
+        async getJoinedSessionsEnvelope(userId) {
             if (!userId) {
                 throw new Error('User ID is required to fetch joined sessions');
             }
@@ -864,17 +988,34 @@
             });
 
             // Handle Kalmia envelope where data has { sessions: [...], isEmpty: false }
-            if (response && Array.isArray(response.sessions)) {
-                return response.sessions;
-            }
-            if (response && response.data && Array.isArray(response.data.sessions)) {
-                return response.data.sessions;
-            }
-            if (Array.isArray(response)) {
-                return response;
+            let payload = response;
+            if (!payload || !Array.isArray(payload.sessions)) {
+                if (response && response.data && Array.isArray(response.data.sessions)) {
+                    payload = response.data;
+                } else if (Array.isArray(response)) {
+                    // A bare array carries no revision at all.
+                    return { sessions: response, revision: null };
+                } else {
+                    return { sessions: [], revision: null };
+                }
             }
 
-            return [];
+            const raw = payload.revision;
+            const revision = (typeof raw === 'number' && isFinite(raw)) ? raw : null;
+            return { sessions: payload.sessions, revision: revision };
+        }
+
+        /**
+         * Fetch the list of sessions joined by the user
+         * GET /getJoinedSessions/{userid}
+         * Returns sessions array from response envelope (e.g. data.sessions)
+         * 
+         * @param {number|string} userId 
+         * @returns {Promise<Array<number|string|Object>>}
+         */
+        async getJoinedSessions(userId) {
+            const envelope = await this.getJoinedSessionsEnvelope(userId);
+            return envelope.sessions;
         }
 
         /**
@@ -1106,9 +1247,9 @@
             try {
                 const response = await this.request('/getSessions', {
                     method: 'POST',
-                    body: {
+                    body: this.authBody(null, null, {
                         sessions: formattedIds
-                    }
+                    })
                 });
 
                 if (Array.isArray(response)) {

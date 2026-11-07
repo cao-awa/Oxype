@@ -21,8 +21,10 @@ import com.github.kusa233.oxype.element.message.piece.MessageTextPiece
 import com.github.kusa233.oxype.exception.body.NeedJsonBodyException
 import com.github.kusa233.oxype.exception.login.AuthenticationException
 import com.github.kusa233.oxype.exception.request.MissingParameterException
+import com.github.kusa233.oxype.friend.manager.FriendManager
 import com.github.kusa233.oxype.message.MessageManager
 import com.github.kusa233.oxype.session.Session
+import com.github.kusa233.oxype.session.list.SessionListRevisions
 import com.github.kusa233.oxype.session.manager.SessionManager
 import com.github.kusa233.oxype.asset.ClientAssets
 import com.github.kusa233.oxype.user.AvatarStorage
@@ -434,6 +436,22 @@ object OxypeHttpServer {
     }
 
     /**
+     * Resolves a JSON caller when one is offered, without requiring it.
+     *
+     * A handful of routes are readable without credentials but mean something richer
+     * when the reader is known -- `getSessions` names a friend conversation after the
+     * other person only for the two people in it. Those routes call this and fall back
+     * to the anonymous answer, so adding the identity could not break an existing
+     * caller that sends none.
+     */
+    private fun resolveOptionalJsonUser(json: JSONObject): User? {
+        val userid = json.longValue("userid", "userId")
+        val token = json.getString("token")
+        if (userid == null || token == null || token.isEmpty()) return null
+        return UserManager.getUserByToken(token, userid)
+    }
+
+    /**
      * Loads a session or aborts with 404.
      *
      * Returning the value keeps callers free of the nullable-then-abort dance that
@@ -462,6 +480,28 @@ object OxypeHttpServer {
             )
         }
         return action()
+    }
+
+    /**
+     * Refuses a group-only operation on a friend conversation.
+     *
+     * A friend conversation is a two-person session that exists only while the
+     * friendship does, so it has no third party to invite and nobody to promote:
+     * its membership is the friendship itself. The routes that would change
+     * either are left refusing it by name rather than by accident. Some of them
+     * would already fail an admin check — a friend conversation has no owner and
+     * no admins — but relying on that would make the answer read as an
+     * authorisation problem to a member who is legitimately allowed in.
+     */
+    fun KalmiaHttpContext.requireGroupSession(session: Session) {
+        if (session.isFriendConversation()) {
+            abortWith(
+                IllegalStateException("This is a friend conversation, not a group"),
+                HttpResponseStatus.CONFLICT,
+                this
+            )
+            throw IllegalStateException("Unreachable: the request was aborted")
+        }
     }
 
     /** Runs [action] only for the session owner or one of its admins. */
@@ -493,16 +533,32 @@ object OxypeHttpServer {
      * the client can decide which management controls to render.
      */
     private fun sessionView(session: Session, viewerId: Long): JSONObject {
+        val isFriend = session.isFriendConversation()
+        val peer = session.peerFor(viewerId)
+        val peerUser = peer?.let { UserManager.getUser(it) }
         return JSONObject {
             "sessionId" set session.sessionId
-            "sessionName" set session.sessionName
+            // A friend conversation is called whatever the *other* participant is
+            // called, and carries their picture. Both are resolved here, from the
+            // viewer's side, because the same record has to read correctly for the
+            // two people looking at it.
+            "sessionName" set (peerUser?.username ?: session.sessionName)
             "description" set session.description
             "owner" set session.owner
-            "avatarUrl" set AvatarStorage.urlOf(session.avatarFile)
+            "avatarUrl" set (if (isFriend) AvatarStorage.urlOf(peerUser?.avatarFile)
+                             else AvatarStorage.urlOf(session.avatarFile))
             "admins" set JSONArray { session.adminIds().forEach { add(it) } }
             "members" set JSONArray { session.memberIds().forEach { add(it) } }
             "isOwner" set session.isOwner(viewerId)
             "isAdmin" set session.isAdmin(viewerId)
+            "isFriend" set isFriend
+            // A JSON object cannot carry an explicit null through this builder,
+            // and the client wants a number it can render, so an absent peer is
+            // simply left out of the view rather than sent as a null key.
+            if (peer != null) {
+                "peerUserId" set peer
+                "peerUsername" set (peerUser?.username ?: "")
+            }
         }
     }
 
@@ -543,13 +599,17 @@ object OxypeHttpServer {
     }
 
     /**
-     * Whether two accounts are in at least one session together.
+     * Whether two accounts are in at least one session together, or are friends.
      *
      * Used to decide whether one may see the other's avatar. Reads the caller's session
      * list and checks membership of each, which is the same data the session list itself
-     * is built from, so no separate index has to be kept in step.
+     * is built from, so no separate index has to be kept in step. A friendship counts on
+     * its own: friends always share their one-to-one conversation, but resolving that
+     * would mean reading a session per call, and the friendship is the fact being asked
+     * about anyway.
      */
     private fun sharesSessionWith(viewerId: Long, otherId: Long): Boolean {
+        if (FriendManager.linkedByFriendship(viewerId, otherId)) return true
         val joined = UserManager.getJoinedSessions(viewerId)
         return joined.sessions.any { sessionId ->
             val session = SessionManager.getSession(sessionId) ?: return@any false
@@ -1122,7 +1182,22 @@ object OxypeHttpServer {
             route("getJoinedSessions/{userid}") {
                 get {
                     requireUserFromQuery { caller ->
-                        UserManager.getJoinedSessions(caller.id)
+                        // The revision is read *before* the list, and the order matters.
+                        // A change landing between the two reads then pairs an older
+                        // revision with a list that already includes the change: the
+                        // client stores a number that is behind reality, so its next
+                        // comparison sees a difference and reloads. That is merely a
+                        // redundant reload. Reading the revision second would pair the
+                        // old list with the *new* revision instead, and the client would
+                        // then believe a stale list was current -- every later comparison
+                        // would match, and it would never catch up.
+                        val revision = SessionListRevisions.current(caller.id)
+                        val sessions = UserManager.getJoinedSessions(caller.id)
+                        JSONObject {
+                            "sessions" set JSONArray { sessions.sessions.forEach { add(it) } }
+                            "isEmpty" set sessions.isEmpty
+                            "revision" set revision
+                        }
                     }
                 }
             }
@@ -1249,6 +1324,13 @@ object OxypeHttpServer {
                 post {
                     requireJsonBody { json ->
                         val sessions = json.getArray("sessions")
+                        // This route is routinely called without credentials, so the
+                        // caller is resolved on a best-effort basis rather than
+                        // demanded: with one, every record is answered in the caller's
+                        // view, which is what lets a friend conversation be named and
+                        // pictured after the other person in the sidebar. Without one
+                        // the raw records are still returned, exactly as before.
+                        val viewer = resolveOptionalJsonUser(json)
                         JSONArray {
                             sessions?.forEach {
                                 if (it is JSONNumber) {
@@ -1256,16 +1338,20 @@ object OxypeHttpServer {
                                         it.asLong()
                                     )
                                     if (session != null) {
-                                        // The encoded record carries `avatarFile`, which is
-                                        // an on-disk name the client cannot use. This list is
-                                        // what draws every conversation at once, so the
-                                        // servable URL is added here rather than leaving each
-                                        // row to ask for its own picture.
-                                        val encoded = JSONCodec.encode(session)
-                                        if (encoded is JSONObject) {
-                                            encoded.put("avatarUrl", AvatarStorage.urlOf(session.avatarFile))
+                                        if (viewer != null) {
+                                            add(sessionView(session, viewer.id))
+                                        } else {
+                                            // The encoded record carries `avatarFile`, which is
+                                            // an on-disk name the client cannot use. This list is
+                                            // what draws every conversation at once, so the
+                                            // servable URL is added here rather than leaving each
+                                            // row to ask for its own picture.
+                                            val encoded = JSONCodec.encode(session)
+                                            if (encoded is JSONObject) {
+                                                encoded.put("avatarUrl", AvatarStorage.urlOf(session.avatarFile))
+                                            }
+                                            add(encoded)
                                         }
-                                        add(encoded)
                                     }
                                 }
                             }
@@ -1598,6 +1684,7 @@ object OxypeHttpServer {
                     requireJsonBody { json ->
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
+                            requireGroupSession(session)
 
                             requireSessionAdmin(session, user.id) {
                                 val name = json.getString("name")
@@ -1644,6 +1731,7 @@ object OxypeHttpServer {
 
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
+                            requireGroupSession(session)
 
                             requireSessionAdmin(session, user.id) {
                                 if (session.isOwner(targetId)) {
@@ -1731,6 +1819,39 @@ object OxypeHttpServer {
                             val session = requireSession(sessionId)
 
                             requireSessionMember(session, user.id) {
+                                // Leaving a friend conversation *is* removing the
+                                // friend: the conversation exists only as the
+                                // friendship's own channel, so "leaving" it while
+                                // staying friends would leave a friendship with
+                                // nowhere to talk. Both sides go, and the
+                                // conversation and its history go with them.
+                                if (session.isFriendConversation()) {
+                                    val peer = session.peerFor(user.id)
+                                    if (peer == null) {
+                                        abortWith(
+                                            IllegalStateException("This conversation has no other participant"),
+                                            HttpResponseStatus.CONFLICT,
+                                            this
+                                        )
+                                        // abortWith always throws; this line only
+                                        // narrows the type for the compiler.
+                                        throw IllegalStateException("Unreachable: the request was aborted")
+                                    }
+
+                                    FriendManager.removeFriendBothWays(user.id, peer)
+                                    UserManager.leaveSession(user.id, sessionId)
+                                    UserManager.leaveSession(peer, sessionId)
+                                    // The peer loses the conversation while idle,
+                                    // so their sidebar is told to reload.
+                                    OxypeWebSocketServer.publishSessionListChanged(peer)
+
+                                    return@requireSessionMember JSONObject {
+                                        "left" set true
+                                        "sessionId" set sessionId
+                                        "removedFriend" set peer
+                                    }
+                                }
+
                                 session.removeMember(user.id)
                                 UserManager.leaveSession(user.id, sessionId)
 
@@ -1761,6 +1882,7 @@ object OxypeHttpServer {
                     requireJsonBody { json ->
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
+                            requireGroupSession(session)
 
                             requireSessionAdmin(session, user.id) {
                                 val uuids = SessionManager.getInviteUuids(sessionId, user.id)
@@ -1781,6 +1903,7 @@ object OxypeHttpServer {
                     requireJsonBody { json ->
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
+                            requireGroupSession(session)
 
                             requireSessionAdmin(session, user.id) {
                                 try {
@@ -1810,6 +1933,7 @@ object OxypeHttpServer {
 
                         requireUser(json) { user ->
                             val session = requireSession(sessionId)
+                            requireGroupSession(session)
 
                             requireSessionAdmin(session, user.id) {
                                 val removed = SessionManager.revokeInviteUuid(sessionId, user.id, uuid)
@@ -1817,6 +1941,279 @@ object OxypeHttpServer {
                                     "revoked" set removed
                                     "uuid" set uuid
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Looks an account up by exact id, for the friend search field.
+             *
+             * The search box only accepts digits, so there is nothing to search
+             * *by* beyond the id itself: this returns the single account that id
+             * names, or null. It is deliberately not a substring search over all
+             * accounts, which would let anyone enumerate them by typing "1".
+             *
+             * The name and picture are included because the result is drawn as a
+             * card before any friendship exists; that is also why this does not go
+             * through `getUser`, which shows another account's profile only to
+             * someone who already shares a conversation with them.
+             */
+            route("findUser/{userid}") {
+                val targetId by placeholder<Long>("userid")
+                get {
+                    requireUserFromQuery { caller ->
+                        if (targetId == caller.id) {
+                            JSONObject { "found" set false }
+                        } else {
+                            val target = UserManager.getUser(targetId)
+                            if (target == null) {
+                                JSONObject { "found" set false }
+                            } else {
+                                JSONObject {
+                                    "found" set true
+                                    "userid" set targetId
+                                    "username" set target.username
+                                    "avatarUrl" set AvatarStorage.urlOf(target.avatarFile)
+                                    "isFriend" set FriendManager.areFriends(caller.id, targetId)
+                                    "requestPending" set FriendManager.hasPendingRequest(caller.id, targetId)
+                                    "requestIncoming" set FriendManager.hasPendingRequest(targetId, caller.id)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Lists the caller's friends, as full user cards. */
+            route("getFriends/{userid}") {
+                get {
+                    requireUserFromQuery { caller ->
+                        val friends = FriendManager.getFriends(caller.id).ids()
+                        JSONObject {
+                            "friends" set JSONArray {
+                                friends.forEach { friendId ->
+                                    add(userView(friendId))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Lists the friend requests waiting for the caller, and their own
+             * outgoing ones.
+             *
+             * Both directions come back from one call because they are drawn in
+             * the same panel, and two calls would let the two halves disagree
+             * about what is pending while a request is being accepted.
+             */
+            route("getFriendRequests/{userid}") {
+                get {
+                    requireUserFromQuery { caller ->
+                        val incoming = FriendManager.getIncomingRequests(caller.id).ids()
+                        val outgoing = FriendManager.getOutgoingRequests(caller.id).ids()
+                        JSONObject {
+                            "incoming" set JSONArray {
+                                incoming.forEach { senderId -> add(userView(senderId)) }
+                            }
+                            "outgoing" set JSONArray {
+                                outgoing.forEach { targetId -> add(userView(targetId)) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Sends a friend request, or accepts one already waiting. */
+            route("sendFriendRequest/{userid}") {
+                post {
+                    requireJsonBody { json ->
+                        val targetId = assertLong(
+                            json.longValue("targetUserid", "targetUserId"),
+                            "targetUserid"
+                        )
+
+                        requireUser(json) { caller ->
+                            if (targetId == caller.id) {
+                                abortWith(
+                                    IllegalArgumentException("Cannot befriend yourself"),
+                                    HttpResponseStatus.BAD_REQUEST,
+                                    this
+                                )
+                            }
+                            if (UserManager.getUser(targetId) == null) {
+                                abortWith(
+                                    IllegalArgumentException("No such user"),
+                                    HttpResponseStatus.NOT_FOUND,
+                                    this
+                                )
+                            }
+
+                            val outcome = try {
+                                FriendManager.sendRequest(caller.id, targetId)
+                            } catch (e: IllegalArgumentException) {
+                                abortWith(e, HttpResponseStatus.BAD_REQUEST, this)
+                                // abortWith always throws; this line only
+                                // narrows the type for the compiler.
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+
+                            when (outcome) {
+                                is FriendManager.RequestOutcome.Sent -> JSONObject {
+                                    "status" set "pending"
+                                    "targetUserid" set outcome.target
+                                }.also {
+                                    // The target did nothing, so their open friends
+                                    // list has no other way to learn of the request.
+                                    OxypeWebSocketServer.publishSessionListChanged(outcome.target)
+                                }
+                                is FriendManager.RequestOutcome.AcceptedExisting -> {
+                                    // They had asked first, so this call completed
+                                    // the friendship and `acceptRequest` already
+                                    // created the conversation; this re-reads it
+                                    // so the caller can be handed its id.
+                                    JSONObject {
+                                        "status" set "accepted"
+                                        "targetUserid" set outcome.target
+                                        "sessionId" set outcome.sessionId
+                                    }.also {
+                                        OxypeWebSocketServer.publishSessionListChanged(outcome.target)
+                                        OxypeWebSocketServer.publishSessionListChanged(caller.id)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            /** Accepts a pending request, creating the shared conversation. */
+            route("acceptFriendRequest/{userid}") {
+                post {
+                    requireJsonBody { json ->
+                        val requesterId = assertLong(
+                            json.longValue("requesterUserid", "requesterUserId"),
+                            "requesterUserid"
+                        )
+
+                        requireUser(json) { caller ->
+                            val session = try {
+                                FriendManager.acceptRequest(caller.id, requesterId)
+                            } catch (e: IllegalArgumentException) {
+                                abortWith(e, HttpResponseStatus.BAD_REQUEST, this)
+                                // abortWith always throws; this line only
+                                // narrows the type for the compiler.
+                                throw IllegalStateException("Unreachable: the request was aborted")
+                            }
+                            JSONObject {
+                                "accepted" set true
+                                "sessionId" set session.sessionId
+                            }.also {
+                                // The requester is not the caller: their conversation
+                                // appeared while they were doing nothing, so their
+                                // sidebar is told to reload. The accepter's own client
+                                // gets the same push for its other devices.
+                                OxypeWebSocketServer.publishSessionListChanged(requesterId)
+                                OxypeWebSocketServer.publishSessionListChanged(caller.id)
+                            }
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Declines a request, or withdraws the caller's own.
+             *
+             * One route for both because they are the same act seen from two
+             * sides: the pair of ids involved is what decides which row the
+             * request sits in, and the caller never says so itself.
+             */
+            route("declineFriendRequest/{userid}") {
+                post {
+                    requireJsonBody { json ->
+                        val otherId = assertLong(
+                            json.longValue("requesterUserid", "requesterUserId", "targetUserid", "targetUserId"),
+                            "requesterUserid"
+                        )
+
+                        requireUser(json) { caller ->
+                            // Both directions are cleared in one call: this route
+                            // serves "accept is not what I want" whichever side it
+                            // came from, and a client that has just seen the list
+                            // change underneath it may be holding a stale guess
+                            // about who asked whom.
+                            val removed = FriendManager.removeRequestBetween(caller.id, otherId)
+                            JSONObject {
+                                "removed" set removed
+                                "requesterUserid" set otherId
+                            }
+                        }
+                    }
+                }
+            }
+
+            /**
+             * Ends a friendship, destroying the conversation it owns.
+             *
+             * Deletion is bidirectional by design: friendship is symmetric, so
+             * there is no coherent state in which one side still has the other
+             * while the other does not. The conversation goes with it — a
+             * removed friend should not leave a readable transcript behind.
+             */
+            route("removeFriend/{userid}") {
+                post {
+                    requireJsonBody { json ->
+                        val friendId = assertLong(
+                            json.longValue("friendUserid", "friendUserId", "targetUserid", "targetUserId"),
+                            "friendUserid"
+                        )
+
+                        requireUser(json) { caller ->
+                            if (friendId == caller.id) {
+                                abortWith(
+                                    IllegalArgumentException("Cannot unfriend yourself"),
+                                    HttpResponseStatus.BAD_REQUEST,
+                                    this
+                                )
+                            }
+
+                            val conversationId = FriendManager.getConversationId(caller.id, friendId)
+                            val removed = FriendManager.removeFriendBothWays(caller.id, friendId)
+
+                            if (!removed) {
+                                abortWith(
+                                    IllegalArgumentException("You are not friends with this user"),
+                                    HttpResponseStatus.NOT_FOUND,
+                                    this
+                                )
+                            }
+
+                            // Dropping the conversation from both participants'
+                            // joined lists is what actually makes it disappear
+                            // from their sidebars; the record itself is already
+                            // gone, so a leftover entry would resolve to nothing.
+                            if (conversationId != null) {
+                                UserManager.leaveSession(caller.id, conversationId)
+                                UserManager.leaveSession(friendId, conversationId)
+                            }
+
+                            JSONObject {
+                                "removed" set true
+                                "friendUserid" set friendId
+                                // Omitted rather than sent as null when the pair
+                                // never had a conversation to begin with.
+                                if (conversationId != null) {
+                                    "sessionId" set conversationId
+                                }
+                            }.also {
+                                // Only the other side needs telling: the caller is
+                                // already updating its own sidebar from the response,
+                                // and a reload racing that cleanup would redraw the
+                                // row it has just removed.
+                                OxypeWebSocketServer.publishSessionListChanged(friendId)
                             }
                         }
                     }

@@ -10,7 +10,7 @@ Every request body and response value is JSON, and every response value is wrapp
 Conventions:
 1. The authentication fields are ``userid`` and ``token``; ``userId`` is accepted as an alias for ``userid``.
 2. POST endpoints read the authentication fields from the JSON body; GET endpoints read them from the query string, falling back to the headers ``userid``/``X-User-Id`` and ``token``/``X-Token``.
-3. Common errors: 400 when the body is not valid JSON or a required field is missing, 401 when the token is invalid, 403 when the caller is not allowed to do this, and 404 when the target does not exist.
+3. Common errors: 400 when the body is not valid JSON, a required field is missing, or the value names something the caller cannot do; 401 when the token is invalid; 403 when the caller is not allowed to do this; 404 when the target does not exist; 409 when a group-only operation is attempted on a friend conversation.
 
 ### isAlive
 
@@ -578,12 +578,18 @@ Request body example:
 Response:
 1. ``isEmpty``:boolean (whether the user has joined no session at all)
 2. ``sessions``:array<long> (ids of the joined sessions)
+3. ``revision``:long (a counter that advances whenever this user's session list changes)
+
+``revision`` exists so a client can tell that it missed a ``sessionsChanged`` WebSocket push. Every membership change bumps the counter, and the counter is reported again in the ``ready`` and ``pong`` WebSocket frames, so a client that stores the value from a list read can compare it against the next frame it receives and reload only when the two disagree. A push that was never delivered cannot be detected any other way: the connection stays open and simply says nothing.
+
+A client must compare revisions rather than assume equality means "nothing changed": the counter restarts at 0 when the server restarts, which can only ever make a client reload once more than necessary, never leave it stale. The value is read *before* the list is built, so a change that lands between the two reads is reported as the *older* revision — the client then stays behind and reloads on the next comparison. Reading it afterwards would pair the *newer* revision with the older list and leave the client permanently stale.
 
 Response example:
 ```json
 {
   "isEmpty": false,
-  "sessions": [1, 2, 3]
+  "sessions": [1, 2, 3],
+  "revision": 12
 }
 ```
 
@@ -741,37 +747,63 @@ Endpoint:``/getSessions``
 
 Request body:
 1. ``sessions``:array<long> (ids of the sessions to fetch; ids that do not exist are skipped)
+2. ``userid``:long (optional; makes the response caller-relative)
+3. ``token``:string (the token of the signed-in user; required together with ``userid``)
 
-Request body example:
+This route answers in one of two shapes depending on whether credentials were supplied. Most callers send none — the session list is drawn before anyone is signed in — so the credentials are resolved on a best-effort basis rather than demanded.
+
+1. **Without credentials** the stored records are returned as they are encoded, plus ``avatarUrl``. This is the shape this route has always had.
+2. **With credentials** each record is answered in the caller's view, identically to `getSession`. The view names and pictures a friend conversation after the other participant, and carries ``isFriend`` so the client can tell a one-to-one conversation from a group that happens to have two members.
+
+Request body example (no credentials):
 ```json
 {
   "sessions": [1, 2, 3]
 }
 ```
 
-Response:
-1. An array of session objects, each containing:
-2. ``sessionId``:long
-3. ``sessionName``:string
+Request body example (with credentials):
+```json
+{
+  "sessions": [1, 2, 3],
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Both shapes share these keys:
+1. ``sessionId``:long
+2. ``sessionName``:string
+3. ``description``:string
 4. ``owner``:long
 5. ``admins``:array<long>
 6. ``members``:array<long>
-7. ``description``:string
-8. ``avatarFile``:string (the stored file name, or ``null`` when the session has no avatar)
-9. ``avatarUrl``:string (relative URL of the session's picture; empty when there is none)
+7. ``avatarFile``:string (the stored file name, or ``null`` when the session has no avatar; present only in the credential-less shape)
+8. ``avatarUrl``:string (relative URL of the session's picture; empty when there is none)
 
-Response example:
+Only the authenticated shape adds:
+9. ``isOwner``:boolean
+10. ``isAdmin``:boolean
+11. ``isFriend``:boolean (whether this is a one-to-one friend conversation)
+12. ``peerUserId``:long (the other participant; present only on a friend conversation)
+13. ``peerUsername``:string (present only alongside ``peerUserId``)
+
+``peerUserId`` and ``peerUsername`` are omitted rather than sent as ``null``, so a client tests for the key's presence.
+
+Response example (with credentials):
 ```json
 [
   {
     "sessionId": 1,
     "sessionName": "Kotlin",
-    "owner": 1,
-    "admins": [],
-    "members": [1, 2],
     "description": "Discussion about Kotlin",
-    "avatarFile": null,
-    "avatarUrl": ""
+    "owner": 1,
+    "avatarUrl": "",
+    "admins": [2],
+    "members": [1, 2, 3],
+    "isOwner": true,
+    "isAdmin": true,
+    "isFriend": false
   }
 ]
 ```
@@ -796,14 +828,19 @@ Request body example:
 
 Response:
 1. ``sessionId``:long
-2. ``sessionName``:string
+2. ``sessionName``:string (for a friend conversation, the other participant's name)
 3. ``description``:string
 4. ``owner``:long
-5. ``avatarUrl``:string (relative URL of the session's picture; empty when there is none)
+5. ``avatarUrl``:string (relative URL of the session's picture, or of the other participant's picture on a friend conversation; empty when there is none)
 6. ``admins``:array<long>
 7. ``members``:array<long>
 8. ``isOwner``:boolean
 9. ``isAdmin``:boolean
+10. ``isFriend``:boolean (whether this is a one-to-one friend conversation)
+11. ``peerUserId``:long (the other participant; present only on a friend conversation)
+12. ``peerUsername``:string (present only alongside ``peerUserId``)
+
+A friend conversation is an ordinary session that exists only as long as the friendship does. Its membership is the friendship itself, so it has no owner and no admins, and the group-only routes (`updateSession`, `removeSessionMember`, the invite routes) refuse it with 409. Its name and picture are resolved from the viewer's side, so the same stored record reads correctly for both participants. ``peerUserId`` and ``peerUsername`` are omitted rather than sent as ``null``.
 
 Response example:
 ```json
@@ -816,7 +853,26 @@ Response example:
   "admins": [2],
   "members": [1, 2, 3],
   "isOwner": true,
-  "isAdmin": true
+  "isAdmin": true,
+  "isFriend": false
+}
+```
+
+Response example (a friend conversation):
+```json
+{
+  "sessionId": 7,
+  "sessionName": "someone",
+  "description": "",
+  "owner": 0,
+  "avatarUrl": "/avatar/u2-8c1d0f3a.png",
+  "admins": [],
+  "members": [1, 2],
+  "isOwner": false,
+  "isAdmin": false,
+  "isFriend": true,
+  "peerUserId": 2,
+  "peerUsername": "someone"
 }
 ```
 
@@ -1505,6 +1561,8 @@ Request body:
 
 When the owner leaves, ownership passes to the first remaining member when there is one.
 
+**Leaving a friend conversation is removing the friend.** A friend conversation exists only as the friendship's own channel, so leaving it while staying friends would leave a friendship with nowhere to talk. On a friend conversation this route therefore removes the friendship on both sides, deletes the conversation and its message history, and returns ``removedFriend``. The other participant is notified over the WebSocket so an idle client reloads its list.
+
 Request body example:
 ```json
 {
@@ -1516,12 +1574,22 @@ Request body example:
 Response:
 1. ``left``:boolean
 2. ``sessionId``:long
+3. ``removedFriend``:long (the former friend; present only when a friend conversation was left)
 
 Response example:
 ```json
 {
   "left": true,
   "sessionId": 1
+}
+```
+
+Response example (leaving a friend conversation):
+```json
+{
+  "left": true,
+  "sessionId": 7,
+  "removedFriend": 2
 }
 ```
 
@@ -1619,6 +1687,295 @@ Response example:
 }
 ```
 
+### findUser
+
+Request type:GET
+
+Endpoint:``/findUser/{userid}``
+
+Request body:
+1. ``userid``:long (the account to look up, by exact id)
+2. ``userid``:long (the signed-in user)
+3. ``token``:string (the token of the signed-in user)
+
+The friend search field accepts digits only, so there is nothing to search *by* beyond the id itself. This is deliberately an exact-id lookup and not a substring search over all accounts, which would let anyone enumerate them by typing ``1``.
+
+The name and picture are included because the result is drawn as a card before any friendship exists; this is why the lookup does not go through `getUser`, which shows another account's profile only to someone who already shares a conversation with them.
+
+The caller's own id and an unknown id both answer ``{"found": false}`` rather than an error, so the client can render "no such account" without telling a 404 apart from "that's you".
+
+Request body example:
+```json
+{
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Response:
+1. ``found``:boolean (false for the caller's own id and for unknown ids; no other key is present)
+2. ``userid``:long
+3. ``username``:string
+4. ``avatarUrl``:string (relative URL of that account's picture; empty when there is none)
+5. ``isFriend``:boolean (whether the two are already friends)
+6. ``requestPending``:boolean (whether the caller has a request waiting with this account)
+7. ``requestIncoming``:boolean (whether this account has a request waiting with the caller)
+
+Response example:
+```json
+{
+  "found": true,
+  "userid": 2,
+  "username": "someone",
+  "avatarUrl": "",
+  "isFriend": false,
+  "requestPending": false,
+  "requestIncoming": true
+}
+```
+
+Response example (no such account):
+```json
+{
+  "found": false
+}
+```
+
+### getFriends
+
+Request type:GET
+
+Endpoint:``/getFriends/{userid}``
+
+Request body:
+1. ``userid``:long (the signed-in user, whose friends are listed)
+2. ``token``:string (the token of the signed-in user)
+
+Request body example:
+```json
+{
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Response:
+1. ``friends``:array<object>
+
+Each element of ``friends``:
+1. ``userid``:long
+2. ``username``:string (falls back to ``User #<userid>`` when the account has no name)
+3. ``avatarUrl``:string (relative URL of that account's picture; empty when there is none)
+
+Response example:
+```json
+{
+  "friends": [
+    {
+      "userid": 2,
+      "username": "someone",
+      "avatarUrl": "/avatar/u2-8c1d0f3a.png"
+    }
+  ]
+}
+```
+
+### getFriendRequests
+
+Request type:GET
+
+Endpoint:``/getFriendRequests/{userid}``
+
+Request body:
+1. ``userid``:long (the signed-in user)
+2. ``token``:string (the token of the signed-in user)
+
+Request body example:
+```json
+{
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Both directions come back from one call because they are drawn in the same panel, and two calls would let the two halves disagree about what is pending while a request is being accepted.
+
+Response:
+1. ``incoming``:array<object> (requests other accounts sent to the caller, waiting for the caller)
+2. ``outgoing``:array<object> (requests the caller sent that nobody has answered yet)
+
+Each element of either array is a user card with the same three keys `getFriends` returns: ``userid``:long, ``username``:string, ``avatarUrl``:string.
+
+Response example:
+```json
+{
+  "incoming": [
+    {
+      "userid": 3,
+      "username": "another",
+      "avatarUrl": ""
+    }
+  ],
+  "outgoing": []
+}
+```
+
+### sendFriendRequest
+
+Request type:POST
+
+Endpoint:``/sendFriendRequest/{userid}``
+
+Request body:
+1. ``targetUserid``:long (``targetUserId`` is accepted as an alias)
+2. ``userid``:long (the signed-in user)
+3. ``token``:string (the token of the signed-in user)
+
+Idempotent in the direction that matters: asking someone who already asked you *completes* the friendship instead of leaving two requests pointing at each other. That is both what the user meant and what keeps the accept button from being needed on both sides — so the answer distinguishes ``pending`` from ``accepted``.
+
+Becoming friends creates the one-to-one conversation immediately, so the response carries its ``sessionId`` when the request was accepted. The other participant is notified over the WebSocket either way, because they performed no action at that moment.
+
+The caller's own id returns 400; an unknown id returns 404; an existing friendship returns 400. Too many pending incoming requests also returns 400.
+
+Request body example:
+```json
+{
+  "targetUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Response:
+1. ``status``:string (``pending`` when the request now waits for the other side, ``accepted`` when it completed an outstanding request)
+2. ``targetUserid``:long
+3. ``sessionId``:long (the new conversation; present only with ``status: accepted``)
+
+Response example (request sent):
+```json
+{
+  "status": "pending",
+  "targetUserid": 2
+}
+```
+
+Response example (an outstanding request was answered):
+```json
+{
+  "status": "accepted",
+  "targetUserid": 2,
+  "sessionId": 7
+}
+```
+
+### acceptFriendRequest
+
+Request type:POST
+
+Endpoint:``/acceptFriendRequest/{userid}``
+
+Request body:
+1. ``requesterUserid``:long (the account that asked; ``requesterUserId`` is accepted as an alias)
+2. ``userid``:long (the signed-in user)
+3. ``token``:string (the token of the signed-in user)
+
+Creates the friendship and the conversation the two share. The conversation is created here rather than lazily on first open, so accepting has one visible effect in both sidebars immediately and a conversation's id stays stable for as long as the friendship lasts.
+
+There being no such pending request, or the two already being friends, returns 400.
+
+Request body example:
+```json
+{
+  "requesterUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Response:
+1. ``accepted``:boolean
+2. ``sessionId``:long (the conversation the two now share)
+
+Response example:
+```json
+{
+  "accepted": true,
+  "sessionId": 7
+}
+```
+
+### declineFriendRequest
+
+Request type:POST
+
+Endpoint:``/declineFriendRequest/{userid}``
+
+Request body:
+1. ``requesterUserid``:long (``requesterUserId``, ``targetUserid`` and ``targetUserId`` are accepted as aliases)
+2. ``userid``:long (the signed-in user)
+3. ``token``:string (the token of the signed-in user)
+
+One route for both declining a request and withdrawing the caller's own, because they are the same act seen from two sides: the pair of ids involved decides which row the request sits in, and the caller never says so itself. Whatever is pending between the two accounts is cleared in *both* directions in one call, so there is no ordering of the arguments that leaves a stale row behind — and a client holding a stale guess about who asked whom is still served correctly.
+
+Request body example:
+```json
+{
+  "requesterUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Response:
+1. ``removed``:boolean (whether anything was actually pending and has now been removed)
+2. ``requesterUserid``:long (the other account, as supplied)
+
+Response example:
+```json
+{
+  "removed": true,
+  "requesterUserid": 2
+}
+```
+
+### removeFriend
+
+Request type:POST
+
+Endpoint:``/removeFriend/{userid}``
+
+Request body:
+1. ``friendUserid``:long (``friendUserId``, ``targetUserid`` and ``targetUserId`` are accepted as aliases)
+2. ``userid``:long (the signed-in user)
+3. ``token``:string (the token of the signed-in user)
+
+Deletion is bidirectional by design: friendship is symmetric, so there is no coherent state in which one side still has the other while the other does not. The conversation goes with it — including its message history — because a removed friend should not leave a readable transcript behind. The other participant is notified over the WebSocket; the caller is not, since it is already updating its own sidebar from this response and a reload racing that cleanup would redraw the row it has just removed.
+
+The caller's own id returns 400; a pair that are not friends returns 404.
+
+Request body example:
+```json
+{
+  "friendUserid": 2,
+  "userid": 1,
+  "token": "ABC"
+}
+```
+
+Response:
+1. ``removed``:boolean
+2. ``friendUserid``:long
+3. ``sessionId``:long (the conversation that was destroyed; omitted, not ``null``, when the pair never had one)
+
+Response example:
+```json
+{
+  "removed": true,
+  "friendUserid": 2,
+  "sessionId": 7
+}
+```
+
 ## WebSocket
 
 Endpoint:``ws://{host}:{port}/oxype``
@@ -1626,6 +1983,8 @@ Endpoint:``ws://{host}:{port}/oxype``
 Listens on ``0.0.0.0:12346`` by default and is configurable through ``server_host`` and ``server_port`` in ``configs/oxype_websocket.json``.
 
 A connection must send ``auth`` before anything else. Once authenticated, the server automatically subscribes it to every session the user has joined. Sending any other message while unauthenticated yields an ``error`` and the server closes the connection.
+
+Pushes are **at-most-once**: a frame is written only to connections open at that instant, and nothing is queued for one that is not. The session-list pushes therefore carry a ``revision``, and the same counter is reported by ``ready``, ``pong`` and `getJoinedSessions`, so a client can detect that it missed one and reload.
 
 ### auth
 
@@ -1647,11 +2006,15 @@ Message body example:
 
 Response (success):
 1. ``type``:string (``ready``)
+2. ``revision``:long (the caller's session-list revision at the moment of authentication)
+
+``revision`` is the same counter `getJoinedSessions` reports. Comparing it against the value the client stored when it last read its list is what lets a client tell a reconnect where nothing happened apart from one where a ``sessionsChanged`` push was lost. It is read *before* the subscription list is rebuilt, so a change landing in between leaves the client behind rather than labelled as current.
 
 Response example:
 ```json
 {
-  "type": "ready"
+  "type": "ready",
+  "revision": 12
 }
 ```
 
@@ -1683,11 +2046,15 @@ Message body example:
 
 Response:
 1. ``type``:string (``pong``)
+2. ``revision``:long (the caller's session-list revision at the moment of the ping)
+
+The heartbeat already goes round every twenty seconds and already comes back, so the revision rides along for free. This matters because a connection that stayed open the whole time can still have missed a push: delivery is at-most-once, and a socket that is re-authenticating after a token refresh drops anything sent through it in the meantime. A client that compares this value against the one it stored can recover without waiting for a reconnect.
 
 Response example:
 ```json
 {
-  "type": "pong"
+  "type": "pong",
+  "revision": 12
 }
 ```
 
@@ -1865,5 +2232,31 @@ Message body example:
   "type": "messageDeleted",
   "sessionId": 1,
   "messageId": 12
+}
+```
+
+### sessionsChanged
+
+Direction:server → client
+
+Pushed when the recipient's *list of conversations* changed, as opposed to something inside one of them. A conversation can appear without a message being sent into it — accepting a friend request creates the one-to-one conversation — and the participant who performed no action at that moment would otherwise keep a sidebar without it until the next reload.
+
+Addressed to an account rather than a session, because the recipient cannot have subscribed to a conversation they do not yet know about.
+
+The payload carries no ids: the client reloads its own list, so the push cannot be used to make a client display a conversation it may not read.
+
+Message body:
+1. ``type``:string (``sessionsChanged``)
+2. ``revision``:long (the recipient's session-list revision *after* this change)
+
+The ``revision`` is bumped before the frame is sent, so a client that receives this frame can record the value and later detect that it missed nothing — or, if it missed a *different* push, notice through the next ``pong``.
+
+**Delivery is at-most-once.** The frame is written only to connections open at that instant; nothing is queued. A client must therefore treat ``revision`` as the authority and a pushed frame as an optimisation, never the other way round. A client that has no stored revision must fail toward reloading.
+
+Message body example:
+```json
+{
+  "type": "sessionsChanged",
+  "revision": 13
 }
 ```

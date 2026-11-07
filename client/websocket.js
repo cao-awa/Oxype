@@ -177,7 +177,13 @@
             }
             if (data === 'ready' || (message && message.type === 'ready')) {
                 ready = true;
-                emit('oxype:websocket:ready', { data: data });
+                // `message` rather than `data`: the ready frame also reports the
+                // revision of the account's conversation list, so the page can tell a
+                // reconnect where nothing happened from one where a push was lost.
+                emit('oxype:websocket:ready', { data: data, message: message });
+            }
+            if (message && message.type === 'pong' && message.revision !== undefined) {
+                emit('oxype:websocket:revision', { revision: message.revision });
             }
             emit('oxype:websocket:message', { data: data });
         };

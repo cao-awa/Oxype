@@ -2,6 +2,7 @@ package com.github.kusa233.oxype.session.manager
 
 import com.github.cao.awa.cason.util.bytes.BytesUtil
 import com.github.cao.awa.cason.util.math.Base256
+import com.github.kusa233.oxype.message.MessageManager
 import com.github.kusa233.oxype.session.Session
 import com.github.kusa233.oxype.session.invite.SessionInviteList
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.SESSION_ACTIVE_UUIDS_PREFIX
@@ -95,6 +96,32 @@ object SessionManager {
         return BytesUtil.concat(SESSION_PREFIX, Base256.longToBuf(sessionId))
     }
 
+    /**
+     * Destroys a conversation: its record, its messages and its invites.
+     *
+     * Used only where a conversation is meant to stop existing — currently the
+     * one-to-one conversation of a friendship that was just removed. Ordinary
+     * conversations are left behind when their last member leaves, so this is
+     * deliberately not part of the leave flow.
+     *
+     * Members' "joined" lists are *not* rewritten here; the caller knows which
+     * participants it is removing the conversation from and does that with
+     * [UserManager.leaveSession], so a conversation deleted from one code path
+     * cannot silently strip a list the caller meant to keep.
+     */
+    fun deleteSession(sessionId: Long) {
+        // Invites first: a live UUID is a key into the conversation, and leaving
+        // one behind would keep handing out access to an id that no longer
+        // exists.
+        for (uuid in getInviteList(sessionId).uuids) {
+            STORAGE.remove(createInviteKey(uuid))
+        }
+        STORAGE.remove(createSessionActiveUuidsKey(sessionId))
+
+        MessageManager.purgeSession(sessionId)
+        STORAGE.remove(createSessionKey(sessionId))
+    }
+
     fun normalizeInviteUuid(uuid: String): String {
         var s = uuid.trim()
         while (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
@@ -151,6 +178,12 @@ object SessionManager {
         val session = getSession(sessionId) ?: throw IllegalArgumentException("Session not found")
         requireAdmin(session, callerId)
 
+        // A friend conversation is closed to everyone but its two participants,
+        // so it never issues an invite UUID in the first place.
+        if (session.isFriendConversation()) {
+            throw IllegalStateException("A friend conversation cannot issue invite UUIDs")
+        }
+
         val inviteList = getInviteList(sessionId)
         if (inviteList.uuids.size >= MAX_INVITE_UUIDS) {
             throw IllegalStateException("A session can hold at most $MAX_INVITE_UUIDS invite UUIDs")
@@ -196,6 +229,14 @@ object SessionManager {
 
         val session = getSession(sessionId)
             ?: throw IllegalArgumentException("Target session not found")
+
+        // A friend conversation has exactly two people in it by definition; an
+        // invite UUID that would add a third is refused rather than accepted and
+        // then half-ignored. Friend conversations never issue UUIDs, so this only
+        // catches a UUID minted before the conversation became one.
+        if (session.isFriendConversation()) {
+            throw IllegalArgumentException("This conversation cannot be joined by invite")
+        }
 
         session.addMember(userid)
         saveSession(session)

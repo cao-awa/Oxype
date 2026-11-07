@@ -4,6 +4,7 @@ import com.github.cao.awa.cason.util.bytes.BytesUtil
 import com.github.cao.awa.cason.util.math.Base256
 import com.github.kusa233.oxype.hash.password.PasswordHasher
 import com.github.kusa233.oxype.session.list.SessionList
+import com.github.kusa233.oxype.session.list.SessionListRevisions
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.STORAGE
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_JOINED_SESSIONS_PREFIX
 import com.github.kusa233.oxype.storage.OxypeStorage.Companion.USER_PREFIX
@@ -43,16 +44,24 @@ object UserManager {
         val key = createJoinedSessionsKey(userid)
         val sessionList = STORAGE[key, SessionList::class] ?: SessionList(false, mutableListOf())
         sessionList.normaliseStoredIds()
+        val changed = !sessionList.contains(sessionId)
         sessionList.add(sessionId)
         STORAGE[key] = sessionList
+        // Joined from somewhere that may not push (creating a session, being added
+        // to one). Counting the write itself keeps the revision honest even when no
+        // notification accompanies it: an already-open client would otherwise keep a
+        // version that matches while its list is out of date.
+        if (changed) SessionListRevisions.bump(userid)
     }
 
     fun leaveSession(userid: Long, sessionId: Long) {
         val key = createJoinedSessionsKey(userid)
         val sessionList = STORAGE[key, SessionList::class] ?: return
         sessionList.normaliseStoredIds()
+        val changed = sessionList.contains(sessionId)
         sessionList.remove(sessionId)
         STORAGE[key] = sessionList
+        if (changed) SessionListRevisions.bump(userid)
     }
 
     /** Resolves a logged-in user id from a token, if that token is still active. */

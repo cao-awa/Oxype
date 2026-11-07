@@ -15,6 +15,7 @@ import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler
 import com.github.cao.awa.cason.obj.JSONObject
 import com.github.cao.awa.cason.serialize.parser.JSONParser
 import com.github.kusa233.oxype.element.message.Message
+import com.github.kusa233.oxype.session.list.SessionListRevisions
 import com.github.kusa233.oxype.user.manager.UserManager
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Logger
@@ -108,6 +109,37 @@ object OxypeWebSocketServer {
     private fun broadcastToSession(sessionId: Long, payload: String) {
         clients.forEach { client ->
             if (client.isSubscribed(sessionId)) {
+                client.send(payload)
+            }
+        }
+    }
+
+    /**
+     * Tells one account that its list of conversations changed.
+     *
+     * A new conversation appears without a message being sent into it: accepting a
+     * friend request creates the one-to-one conversation, and the requester -- who
+     * performed no action at that moment -- would otherwise keep a sidebar without
+     * it until the next reload. Addressed to a user rather than a session because
+     * the recipient cannot have subscribed to a conversation they do not yet know
+     * about.
+     *
+     * The payload carries no ids: the client reloads its own list, so the push
+     * cannot be used to make a client display a conversation it may not read.
+     *
+     * The push is also counted, before it is sent, so that any client which does
+     * not receive it can later notice. See [SessionListRevisions] for why a lost
+     * push needs a number to be detected at all.
+     */
+    @JvmStatic
+    fun publishSessionListChanged(userid: Long) {
+        val revision = SessionListRevisions.bump(userid)
+        val payload = JSONObject {
+            "type" set "sessionsChanged"
+            "revision" set revision
+        }.toString()
+        clients.forEach { client ->
+            if (client.userId == userid) {
                 client.send(payload)
             }
         }
@@ -273,15 +305,33 @@ object OxypeWebSocketServer {
                     if (authenticated) {
                         userId = userid
                         authToken = token
+                        // Read before the subscription list, for the same reason the
+                        // HTTP route reads it before the sessions: a change landing in
+                        // between then leaves the client with a revision that is behind,
+                        // which costs a redundant reload -- never with an old list
+                        // labelled as current, which would never be corrected. Reporting
+                        // it at all is what lets a client tell a reconnect where nothing
+                        // happened from one where a push was lost.
+                        val revision = SessionListRevisions.current(userid!!)
                         subscriptions.clear()
                         UserManager.getJoinedSessions(userid!!).sessions.forEach { subscriptions.add(it) }
-                        ctx.writeAndFlush(TextWebSocketFrame("{\"type\":\"ready\"}"))
+                        ctx.writeAndFlush(TextWebSocketFrame("{\"type\":\"ready\",\"revision\":$revision}"))
                     } else {
                         ctx.writeAndFlush(TextWebSocketFrame("{\"type\":\"error\",\"code\":\"unauthorized\"}"))
                         ctx.close()
                     }
                 }
-                "ping" -> if (authenticated) ctx.writeAndFlush(TextWebSocketFrame("{\"type\":\"pong\"}"))
+                "ping" -> if (authenticated) {
+                    // The heartbeat already goes round every twenty seconds and already
+                    // comes back, so the revision rides along for free. A connection
+                    // that stayed open the whole time can still have missed a push --
+                    // send() is a no-op while a socket is authenticating again after a
+                    // token refresh, and there is a window during the handshake when the
+                    // user id is not set yet -- so checking only on reconnect would
+                    // leave those clients stale until the page was reloaded.
+                    val revision = userId?.let { SessionListRevisions.current(it) } ?: 0L
+                    ctx.writeAndFlush(TextWebSocketFrame("{\"type\":\"pong\",\"revision\":$revision}"))
+                }
                 "subscribe", "unsubscribe" -> if (authenticated) {
                     val sessionId = json.getLong("sessionId")
                         ?: json.getString("sessionId")?.toLongOrNull()
